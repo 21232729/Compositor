@@ -67,7 +67,7 @@ struct NativeResolutionPaintTests {
         var settings = session.brushSettings
         settings.erasing = true
         let layer = try #require(session.activeLayer)
-        let stroke = try BrushStroke(layer: layer, mask: false, settings: settings, canvas: session.document!.size, useGPU: false)
+        let stroke = try BrushStroke(layer: layer, mask: false, settings: settings, canvas: CGRect(origin: .zero, size: session.document!.size), useGPU: false)
         try stroke.append(CGPoint(x: 100, y: 100))
         try stroke.flush()
         let image = try stroke.paintSnapshot().asset.image

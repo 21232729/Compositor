@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 struct ImageLayer: Identifiable, Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.id == rhs.id && lhs.name == rhs.name && lhs.isVisible == rhs.isVisible && lhs.transform == rhs.transform
-            && lhs.asset?.image === rhs.asset?.image && lhs.parentID == rhs.parentID && lhs.isGroup == rhs.isGroup && lhs.opacity == rhs.opacity && lhs.blendMode == rhs.blendMode && lhs.mask == rhs.mask && lhs.maskSourceID == rhs.maskSourceID && lhs.adjustment == rhs.adjustment && lhs.shape == rhs.shape && lhs.text == rhs.text && lhs.effects == rhs.effects
+            && lhs.asset?.image === rhs.asset?.image && lhs.parentID == rhs.parentID && lhs.isGroup == rhs.isGroup && lhs.opacity == rhs.opacity && lhs.blendMode == rhs.blendMode && lhs.mask == rhs.mask && lhs.maskSourceID == rhs.maskSourceID && lhs.adjustment == rhs.adjustment && lhs.shape == rhs.shape && lhs.text == rhs.text && lhs.effects == rhs.effects && lhs.artboardID == rhs.artboardID
     }
     let id: UUID
     var asset: ImportedImage?
@@ -24,6 +24,8 @@ struct ImageLayer: Identifiable, Equatable {
     /// A stroke and drop shadow drawn around the layer, kept apart from its pixels.
     var effects: LayerEffects?
     var text: LayerText?
+    /// The artboard this layer belongs to, if the document uses artboards.
+    var artboardID: UUID?
     nonisolated var size: CGSize { transform.size }
 
     init(asset: ImportedImage, origin: CGPoint) {
@@ -40,7 +42,7 @@ struct ImageLayer: Identifiable, Equatable {
         self.name = name
     }
 
-    init(id: UUID, asset: ImportedImage?, name: String, isVisible: Bool, transform: LayerTransform, parentID: UUID? = nil, isGroup: Bool = false, opacity: Double = 1, blendMode: LayerBlendMode = .normal, mask: LayerMask? = nil, maskSourceID: UUID? = nil, adjustment: LayerAdjustment? = nil, shape: LayerShape? = nil, effects: LayerEffects? = nil, text: LayerText? = nil) {
+    init(id: UUID, asset: ImportedImage?, name: String, isVisible: Bool, transform: LayerTransform, parentID: UUID? = nil, isGroup: Bool = false, opacity: Double = 1, blendMode: LayerBlendMode = .normal, mask: LayerMask? = nil, maskSourceID: UUID? = nil, adjustment: LayerAdjustment? = nil, shape: LayerShape? = nil, effects: LayerEffects? = nil, text: LayerText? = nil, artboardID: UUID? = nil) {
         self.id = id
         self.asset = asset
         self.name = name
@@ -56,6 +58,7 @@ struct ImageLayer: Identifiable, Equatable {
         self.shape = shape
         self.effects = effects
         self.text = text
+        self.artboardID = artboardID
     }
 }
 
@@ -69,14 +72,28 @@ struct CanvasDocument: Equatable {
     var guides: [CanvasGuide] = []
     /// Part of the document so undo/redo covers selection changes. Not saved to disk.
     var selection: DocumentSelection?
+    /// Artboards in the document. Empty for single-canvas documents.
+    var artboards: [Artboard] = []
+    /// The artboard currently being edited. Layers are scoped to this artboard.
+    var activeArtboardID: UUID?
     var size: CGSize { CGSize(width: width, height: height) }
-    init(id: UUID = UUID(), width: Int, height: Int, layers: [ImageLayer] = [], resolution: Double = 72, guides: [CanvasGuide] = []) {
+    /// The whole working area: the document plus every artboard, so a board drawn past the original
+    /// canvas still paints and renders. With no artboards this is just the document rect, and the
+    /// origin stays at (0, 0) for a single canvas.
+    var canvasBounds: CGRect {
+        let base = CGRect(x: 0, y: 0, width: width, height: height)
+        guard !artboards.isEmpty else { return base }
+        return artboards.reduce(base) { $0.union($1.rect) }
+    }
+    init(id: UUID = UUID(), width: Int, height: Int, layers: [ImageLayer] = [], resolution: Double = 72, guides: [CanvasGuide] = [], artboards: [Artboard] = [], activeArtboardID: UUID? = nil) {
         self.id = id
         self.width = width
         self.height = height
         self.layers = layers
         self.resolution = resolution
         self.guides = guides
+        self.artboards = artboards
+        self.activeArtboardID = activeArtboardID
     }
 
     // Geometry limit; raster memory limits will be established with image import.
@@ -88,15 +105,40 @@ struct CanvasDocument: Equatable {
 }
 
 enum NavigationTool: String, CaseIterable {
-    case move, marquee, lasso, wand, crop, brush, spotHealing, cloneStamp, blur, gradient, shape, type, eyedropper, hand, zoom
+    case move, marquee, lasso, wand, crop, brush, spotHealing, cloneStamp, blur, gradient, shape, pen, type, eyedropper, hand, zoom, artboard
     /// No tool (A): nothing in the tool rail is selected and canvas clicks do nothing.
     case idle
     /// Tools that paint with the brush tip, sharing its size, hardness, opacity, and keys.
     var isBrushTool: Bool { self == .brush || self == .spotHealing || self == .cloneStamp || self == .blur }
     /// Tools that draw and edit selections, sharing modifiers, moving, and nudging.
     var isSelectionTool: Bool { self == .marquee || self == .lasso || self == .wand }
-    var symbol: String { self == .type ? "textformat" : self == .eyedropper ? "eyedropper" : self == .marquee ? "rectangle.dashed" : self == .lasso ? "lasso" : self == .wand ? "wand.and.stars" : self == .brush ? "paintbrush.pointed" : self == .spotHealing ? "bandage" : self == .cloneStamp ? "seal" : self == .blur ? "drop" : self == .gradient ? "square.bottomhalf.filled" : self == .shape ? "square.on.circle" : self == .crop ? "crop" : self == .move ? "arrow.up.left.and.arrow.down.right" : self == .hand ? "hand.draw" : "magnifyingglass" }
-    var label: String { self == .type ? "Type (T)" : self == .eyedropper ? "Eyedropper (I)" : self == .marquee ? "Marquee (M)" : self == .lasso ? "Lasso (L)" : self == .wand ? "Magic (W) · Tab switches Wand and Object" : self == .brush ? "Brush (B) · Eraser (E)" : self == .spotHealing ? "Spot Healing Brush (J)" : self == .cloneStamp ? "Clone Stamp (S) · Option-click sets the source" : self == .blur ? "Smear (R)" : self == .gradient ? "Gradient (G)" : self == .shape ? "Shape (U) · Shift-U switches Rectangle/Ellipse" : self == .crop ? "Crop (C)" : self == .move ? "Move / Transform (V)" : self == .hand ? "Hand (H)" : "Zoom (Z)" }
+    var symbol: String { self == .type ? "textformat" : self == .eyedropper ? "eyedropper" : self == .marquee ? "rectangle.dashed" : self == .lasso ? "lasso" : self == .wand ? "wand.and.stars" : self == .brush ? "paintbrush.pointed" : self == .spotHealing ? "bandage" : self == .cloneStamp ? "seal" : self == .blur ? "drop" : self == .gradient ? "square.bottomhalf.filled" : self == .shape ? "square.on.circle" : self == .pen ? "pencil.tip" : self == .crop ? "crop" : self == .move ? "arrow.up.left.and.arrow.down.right" : self == .hand ? "hand.draw" : self == .artboard ? "rectangle.3.group" : "magnifyingglass" }
+    var label: String { self == .type ? "Type (T)" : self == .eyedropper ? "Eyedropper (I)" : self == .marquee ? "Marquee (M)" : self == .lasso ? "Lasso (L)" : self == .wand ? "Magic (W) · Tab switches Wand and Object" : self == .brush ? "Brush (B) · Eraser (E)" : self == .spotHealing ? "Spot Healing Brush (J)" : self == .cloneStamp ? "Clone Stamp (S) · Option-click sets the source" : self == .blur ? "Smear (R)" : self == .gradient ? "Gradient (G)" : self == .shape ? "Shape (U) · Shift-U switches Rectangle/Ellipse" : self == .pen ? "Pen (P)" : self == .crop ? "Crop (C)" : self == .move ? "Move / Transform (V)" : self == .hand ? "Hand (H)" : self == .artboard ? "Artboard (K)" : "Zoom (Z)" }
+
+    /// Tool groups for the toolbar. Tools in the same group share a slot; right-click shows alternatives.
+    static let toolGroups: [[NavigationTool]] = [
+        [.move],                                    // Move (alone)
+        [.marquee, .lasso, .wand],                  // Selection tools
+        [.crop],                                    // Crop (alone)
+        [.brush, .pen, .spotHealing, .cloneStamp, .blur],  // Paint tools (user requested Pen + Brush together)
+        [.gradient],                                // Gradient (alone)
+        [.shape],                                   // Shape (alone)
+        [.type],                                    // Type (alone)
+        [.eyedropper],                              // Eyedropper (alone)
+        [.hand, .zoom],                             // Navigation tools
+        [.artboard]                                 // Artboard (alone)
+    ]
+
+    /// Returns the group containing this tool.
+    var toolGroup: [NavigationTool] {
+        NavigationTool.toolGroups.first { $0.contains(self) } ?? [self]
+    }
+
+    /// Returns the representative tool for this tool's group (the first tool in the group, or the active tool if it's in this group).
+    var groupRepresentative: NavigationTool {
+        let group = toolGroup
+        return group.first ?? self
+    }
 }
 
 @Observable
@@ -240,6 +282,20 @@ final class EditorSession {
     var shapeLineWidth: Double = 4
     /// The shape being dragged out with the Shape tool, before it becomes a layer.
     var shapeDraft: ShapeDraft?
+    /// The pen path being drawn, before it becomes a layer or selection.
+    var penDraft: PenDraft?
+    /// How the pen tool's finished path is used: fill it as a shape, stroke it, or turn it into a selection.
+    var penOutputMode: PenOutputMode = .shape
+    /// Whether the pen tool fills the path (true) or strokes it (false) when output is Shape.
+    var penFillsShape: Bool = true
+    /// Stroke width in document pixels when the pen tool strokes (not fills) a shape.
+    var penStrokeWidth: Double = 2
+    /// The artboard being created or dragged.
+    var artboardDraft: ArtboardDraft?
+    /// The artboard being moved or resized.
+    var artboardEdit: ArtboardEdit?
+    /// The artboard whose exact size is being typed in, set by right-clicking its size label.
+    var artboardResize: ArtboardResizeTarget?
     var selectionModeChoice = SelectionMode.replace
     /// Mode implied by the Shift/Option keys currently held, nil when neither is.
     var heldSelectionMode: SelectionMode?
@@ -307,8 +363,8 @@ final class EditorSession {
     /// fullscreen it leaves fullscreen instead.
     var escapeHasNothingToCancel: Bool {
         textDraft == nil && levels == nil && brushStroke == nil && warpStroke == nil && lassoDraft == nil
-            && shapeDraft == nil && gradientEdit == nil && cropRect == nil && guideDrag == nil && transformEdit == nil
-            && pixelMove == nil
+            && shapeDraft == nil && penDraft == nil && gradientEdit == nil && cropRect == nil && guideDrag == nil && transformEdit == nil
+            && pixelMove == nil && artboardDraft == nil && artboardEdit == nil
     }
     /// Canvas Only can be switched: there's a canvas, and no text layer being typed or dialog open (Hue/Saturation,
     /// Curves, the color picker…) for an F to belong to.
@@ -386,7 +442,7 @@ final class EditorSession {
     func selectTool(_ value: NavigationTool) {
         if tool != value, !finishText() { return }
         guard !isProjectBusy, brushStroke == nil, warpStroke == nil, levels == nil else { return }
-        if tool != value { commitTransform(); cancelCrop(); resolveGradient(); cancelLasso(); cancelShape() }
+        if tool != value { commitTransform(); cancelCrop(); resolveGradient(); cancelLasso(); cancelShape(); cancelPen() }
         let from = Self.tipFamily(tool), to = Self.tipFamily(value)
         if from != to, let parked = parkedBrushTips[to] {
             parkedBrushTips[from] = (brushSettings.diameter, brushSettings.hardness, brushSettings.opacity)
@@ -683,11 +739,22 @@ final class EditorSession {
         var number = 1
         while names.contains("Layer \(number)") { number += 1 }
         var layer = ImageLayer(name: "Layer \(number)", blankSize: document.size)
-        layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
-        if let parent = layer.parentID { collapsedGroupIDs.remove(parent) }
-        var insertion = document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
+        // A new layer belongs to the board being edited whenever the selection is not already inside one,
+        // so the Layers panel's New Layer button and painting both land in the right board. On a board it
+        // is the board's size, at the board's corner: painting on an artboard stays on it.
+        let placement = newLayerPlacement(boardSize: true)
+        let parent = placement.parent
+        layer.parentID = parent
+        if let board = placement.board {
+            layer = ImageLayer(name: "Layer \(number)", blankSize: board.size)
+            layer.transform = LayerTransform(origin: board.origin, size: board.size)
+            layer.parentID = parent
+        }
+        if let parent { collapsedGroupIDs.remove(parent) }
+        var insertion = parent.flatMap { group in document.layers.lastIndex { $0.parentID == group }.map { $0 + 1 } }
+            ?? document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
         // With a folder selected the layer goes to the top of the folder: just above its last (topmost) contents.
-        if activeLayer?.isGroup == true, let folder = activeLayerID {
+        if activeLayer?.isGroup == true, let folder = activeLayerID, layer.parentID != folder {
             let parents = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0.parentID) })
             func isInside(_ id: UUID) -> Bool {
                 var parent = parents[id] ?? nil
@@ -734,6 +801,11 @@ final class EditorSession {
         beginEdit("Rename Layer")
         defer { endEdit() }
         document?.layers[index].name = name
+        // An artboard's group row and its canvas label are one name.
+        if document?.layers[index].isGroup == true, let artboardID = document?.layers[index].artboardID,
+           let at = document?.artboards.firstIndex(where: { $0.id == artboardID }) {
+            document?.artboards[at].name = name
+        }
     }
 
     func toggleLayerVisibility(_ id: UUID) {

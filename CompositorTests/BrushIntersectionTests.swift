@@ -10,7 +10,7 @@ struct BrushIntersectionTests {
         session.addBlankLayer()
         return try BrushStroke(layer: #require(session.activeLayer), mask: false,
             settings: BrushSettings(diameter: diameter, hardness: 0, red: 1, green: 1, blue: 1, opacity: opacity),
-            canvas: CGSize(width: 800, height: 800), useGPU: useGPU)
+            canvas: CGRect(x: 0, y: 0, width: 800, height: 800), useGPU: useGPU)
     }
     private func trace(_ stroke: BrushStroke, _ points: [CGPoint], step: CGFloat = 12) throws {
         try stroke.append(points[0])

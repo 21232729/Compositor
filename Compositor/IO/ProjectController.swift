@@ -61,6 +61,44 @@ final class ProjectController {
         catch { await showError("Couldn’t export PNG", error: error) }
     }
 
+    /// Every artboard as its own PNG, at its own size, into a chosen folder — as Photoshop's
+    /// "Artboards to Files". Only offered once the document has artboards.
+    func exportArtboards() async {
+        guard session.document != nil, session.usesArtboards, begin() else { return }
+        defer { session.isProjectBusy = false }
+        let artboards = session.document?.artboards ?? []
+        var snapshots: [(name: String, snapshot: ProjectSnapshot)] = []
+        for artboard in artboards {
+            guard let snapshot = session.artboardSnapshot(artboard.id) else { continue }
+            snapshots.append((artboard.name, snapshot))
+        }
+        guard !snapshots.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Export"
+        panel.message = "Each artboard is saved as its own PNG, at its own size."
+        let response: NSApplication.ModalResponse
+        if let window { response = await panel.beginSheetModal(for: window) }
+        else { response = await panel.runModal() }
+        guard response == .OK, let folder = panel.url else { return }
+        let scoped = folder.startAccessingSecurityScopedResource()
+        defer { if scoped { folder.stopAccessingSecurityScopedResource() } }
+        var taken: Set<String> = []
+        for (name, snapshot) in snapshots {
+            // Two artboards may share a name; the files must not.
+            var file = name.isEmpty ? "Artboard" : name
+            var n = 2
+            while taken.contains(file) { file = "\(name) \(n)"; n += 1 }
+            taken.insert(file)
+            let url = folder.appendingPathComponent("\(file).png", isDirectory: false)
+            do { try await ImageExporter.shared.exportPNG(snapshot, to: url) }
+            catch { await showError("Couldn’t export \(file)", error: error); return }
+        }
+    }
+
     func canvasSize() async {
         guard let window, let document = session.document, begin() else { return }
         defer { session.isProjectBusy = false }

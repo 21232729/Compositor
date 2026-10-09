@@ -918,7 +918,12 @@ private final class LayerCell: NSTableCellView, NSTextFieldDelegate {
         disclosure.image = NSImage(systemSymbolName: session.collapsedGroupIDs.contains(layer.id) ? "chevron.right" : "chevron.down", accessibilityDescription: "Expand or collapse folder")
         // Pixel layers and masks show the whole canvas with their pixels where they sit, as Photoshop does;
         // editable text, adjustments and folders keep a square icon. Pictures redraw only when what they show changes.
-        let canvas = session.document?.size ?? CGSize(width: 1, height: 1)
+        // With artboards, the thumbnail must frame the whole working area; otherwise a layer inside a board placed
+        // past the original document rect renders off the small box and shows as an empty checkerboard.
+        let canvas: CGSize
+        if let document = session.document {
+            canvas = session.usesArtboards ? document.canvasBounds.size : document.size
+        } else { canvas = CGSize(width: 1, height: 1) }
         let editableText = layer.liveText != nil
         let framed = layer.adjustment == nil && !layer.isGroup && !editableText
         let layerSize = framed ? CanvasThumbnail.fittedSize(canvas: canvas, box: 36) : CGSize(width: 36, height: 36)

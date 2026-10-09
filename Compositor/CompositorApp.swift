@@ -67,7 +67,7 @@ struct CompositorApp: App {
                             .disabled(RecentProjects.shared.urls.isEmpty)
                     }
                         .disabled(!applicationDelegate.projects.canStart)
-                    Button("Import Images…") { session.showsImporter = true }
+                    Button("Import Images / Photoshop…") { session.showsImporter = true }
                         .disabled(session.levels != nil || session.showsBusy || session.isImporting || session.showsNewDocument)
                 }
                 CommandGroup(replacing: .saveItem) {
@@ -83,6 +83,8 @@ struct CompositorApp: App {
                     Button("Export JPEG…") { Task { await applicationDelegate.projects.exportJPEG() } }
                         .configuredKeyboardShortcut("s", modifiers: [.command, .option, .shift])
                         .disabled(session.document == nil || !applicationDelegate.projects.canStart)
+                    Button("Export Artboards…") { Task { await applicationDelegate.projects.exportArtboards() } }
+                        .disabled(session.document == nil || !session.usesArtboards || !applicationDelegate.projects.canStart)
                     Divider()
                     Button("Close Project") {
                         if let window = applicationDelegate.projects.window {

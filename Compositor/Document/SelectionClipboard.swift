@@ -6,6 +6,8 @@ struct PixelClipboard {
     let origin: CGPoint
     /// The system pasteboard's change count right after writing; a mismatch means another app copied since.
     let changeCount: Int
+    /// The mark written beside the pixels; anything else on the pasteboard means these are stale.
+    let marker: String
 }
 
 /// A whole layer copied with no selection. Paste brings it back complete — folder contents, mask, effects, editable
@@ -106,6 +108,7 @@ extension EditorSession {
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
             pasteboard.setString(layer.id.uuidString, forType: NSPasteboard.PasteboardType("com.compositor.copied-layer"))
+            pasteboard.setString(UUID().uuidString, forType: Self.clipboardMarker)
             pixelClipboard = nil
             copiedLayer = CopiedLayer(ids: copiedLayerIDs(), changeCount: pasteboard.changeCount)
             return
@@ -120,11 +123,15 @@ extension EditorSession {
     /// Keeps pixels for Paste and puts them on the system pasteboard as PNG.
     private func store(_ copied: (image: CGImage, region: CGRect)) {
         let pasteboard = NSPasteboard.general
+        let marker = UUID().uuidString
         pasteboard.clearContents()
         if let png = NSBitmapImageRep(cgImage: copied.image).representation(using: .png, properties: [:]) {
             pasteboard.setData(png, forType: .png)
         }
-        pixelClipboard = PixelClipboard(image: copied.image, origin: copied.region.origin, changeCount: pasteboard.changeCount)
+        // A mark beside the image, so Paste can tell these pixels are still the ones on the pasteboard.
+        pasteboard.setString(marker, forType: Self.clipboardMarker)
+        pixelClipboard = PixelClipboard(image: copied.image, origin: copied.region.origin,
+                                        changeCount: pasteboard.changeCount, marker: marker)
         copiedLayer = nil
     }
 
@@ -135,9 +142,21 @@ extension EditorSession {
         await clearSelectedPixels()
     }
 
+    /// Our own mark on the pasteboard; see `store`.
+    private static let clipboardMarker = NSPasteboard.PasteboardType("com.compositor.pixels")
+
+    /// The pixels copied here are still the ones the system pasteboard holds. Anything else copied since then
+    /// has taken their place, and Paste goes on to look for an image from another app instead.
+    private var ownPixelsAreOnThePasteboard: Bool {
+        guard let pixelClipboard else { return false }
+        let pasteboard = NSPasteboard.general
+        return pasteboard.changeCount == pixelClipboard.changeCount
+            && pasteboard.string(forType: Self.clipboardMarker) == pixelClipboard.marker
+    }
+
     var canPaste: Bool {
         guard document != nil, canEditLayers else { return false }
-        if let pixelClipboard, NSPasteboard.general.changeCount == pixelClipboard.changeCount { return true }
+        if ownPixelsAreOnThePasteboard { return true }
         return NSPasteboard.general.canReadObject(forClasses: [NSImage.self], options: nil)
     }
 
@@ -146,7 +165,7 @@ extension EditorSession {
     func paste() {
         guard canPaste, let document else { return }
         let pasteboard = NSPasteboard.general
-        if let clip = pixelClipboard, pasteboard.changeCount == clip.changeCount {
+        if let clip = pixelClipboard, ownPixelsAreOnThePasteboard {
             addPixelLayer(clip.image, at: clip.origin, name: nextLayerName(), editName: "Paste")
         } else if let external = NSImage(pasteboard: pasteboard)?.cgImage(forProposedRect: nil, context: nil, hints: nil),
                   let image = try? Self.sRGBCopy(of: external) {
@@ -169,11 +188,12 @@ extension EditorSession {
         } catch { brushError = error.localizedDescription }
     }
 
-    /// The selected layers Copy and Duplicate take whole, in document order, leaving out any inside a selected folder.
+    /// The selected layers Copy and Duplicate take whole, in document order. Choosing a folder or an artboard
+    /// takes everything inside it, so pasting an artboard brings back the board and the layers on it.
     private func copiedLayerIDs() -> [UUID] {
         let selected = selectedLayerIDs.union(activeLayerID.map { [$0] } ?? [])
-        let nested = selected.reduce(into: Set<UUID>()) { $0.formUnion(descendantIDs(of: $1)) }
-        return (document?.layers ?? []).map(\.id).filter { selected.contains($0) && !nested.contains($0) }
+        let nested = layerSubtrees((document?.layers ?? []).filter { selected.contains($0.id) }.map(\.id))
+        return (document?.layers ?? []).map(\.id).filter { selected.contains($0) || nested.contains($0) }
     }
 
     /// ⌘J and Duplicate Layer: every selected layer, as Photoshop does.
@@ -185,6 +205,11 @@ extension EditorSession {
     /// took whole. One copy sits just above its original; several stack together, in their order, above the topmost
     /// original, as Photoshop's do. The copies end up selected.
     func duplicateLayers(_ ids: [UUID], editName: String = "Duplicate Layer") {
+        // A layer inside another of these comes with it, so only the outermost are copied: an artboard's
+        // group row and a layer on the board are not two separate copies, and a folder is not copied twice
+        // over. One pass works out everything the folders and boards in the selection already bring.
+        let inside = layerSubtrees(ids.filter { id in document?.layers.first { $0.id == id }?.isGroup == true })
+        let ids = ids.filter { !inside.contains($0) }
         guard canEditLayers, !ids.isEmpty else { return }
         let active = activeLayerID
         beginEdit(editName)
@@ -192,14 +217,13 @@ extension EditorSession {
         for id in ids { if let copy = insertCopy(of: id) { copiesOf[id] = copy } }
         guard !copiesOf.isEmpty else { endEdit(); return }
         if copiesOf.count > 1, let layers = document?.layers {
-            // Panel order, top first, so layers in different folders compare as they're seen.
+            // Panel order, top first, so layers in different folders compare as they're seen. Only the copies of
+            // the layers that were asked for move: a copy of what an artboard holds already sits where it belongs.
             let panel = LayerHierarchy.entries(layers.map(\.hierarchyRecord), topFirst: true, collapsed: []).map(\.layer.id)
-            let originals = panel.filter { copiesOf[$0] != nil }
-            if let top = originals.first, let topLayer = layers.first(where: { $0.id == top }) {
-                let parent = topLayer.parentID
+            if let top = panel.first(where: { ids.contains($0) }), let topLayer = layers.first(where: { $0.id == top }) {
                 var below = top
-                for original in originals.reversed() {
-                    guard let copy = copiesOf[original], placeLayer(copy, in: parent, above: below) else { continue }
+                for original in panel.reversed() where ids.contains(original) {
+                    guard let copy = copiesOf[original], placeLayer(copy, in: topLayer.parentID, above: below) else { continue }
                     below = copy
                 }
             }
@@ -217,13 +241,35 @@ extension EditorSession {
         let originals = (document?.layers ?? []).filter { included.contains($0.id) }
         guard (document?.layers.count ?? 0) + originals.count <= 10_000 else { return nil }
         let mapping = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
+        // Duplicating an artboard group also duplicates its rectangle on the canvas, dropped to the
+        // right of the original, and carries the copied content along with it, as Photoshop does.
+        var newArtboardID: UUID?
+        var shift = CGSize.zero
+        if layer.isGroup, let sourceID = layer.artboardID,
+           let source = document?.artboards.first(where: { $0.id == sourceID }) {
+            let copyID = UUID()
+            let gap: CGFloat = 40
+            shift = CGSize(width: CGFloat(source.width) + gap, height: 0)
+            document?.artboards.append(Artboard(id: copyID, name: source.name + " copy",
+                origin: CGPoint(x: source.origin.x + shift.width, y: source.origin.y + shift.height),
+                width: source.width, height: source.height))
+            newArtboardID = copyID
+        }
         let copies = originals.map { original in
-            ImageLayer(id: mapping[original.id]!, asset: original.asset,
+            var transform = original.transform
+            if shift != .zero { transform.origin = CGPoint(x: transform.origin.x + shift.width, y: transform.origin.y + shift.height) }
+            var mask = original.mask
+            if shift != .zero, var detached = mask?.placement {
+                detached.origin = CGPoint(x: detached.origin.x + shift.width, y: detached.origin.y + shift.height)
+                mask?.placement = detached
+            }
+            return ImageLayer(id: mapping[original.id]!, asset: original.asset,
                 name: original.name + (original.id == layer.id ? " copy" : ""), isVisible: original.isVisible,
-                transform: original.transform, parentID: original.parentID.map { mapping[$0] ?? $0 },
+                transform: transform, parentID: original.parentID.map { mapping[$0] ?? $0 },
                 isGroup: original.isGroup, opacity: original.opacity, blendMode: original.blendMode,
-                mask: original.mask, maskSourceID: original.maskSourceID.map { mapping[$0] ?? $0 },
-                adjustment: original.adjustment, shape: original.shape, effects: original.effects, text: original.text)
+                mask: mask, maskSourceID: original.maskSourceID.map { mapping[$0] ?? $0 },
+                adjustment: original.adjustment, shape: original.shape, effects: original.effects, text: original.text,
+                artboardID: original.id == layer.id ? newArtboardID : original.artboardID)
         }
         document?.layers.insert(contentsOf: copies, at: index + 1)
         for original in originals where collapsedGroupIDs.contains(original.id) {
@@ -254,8 +300,12 @@ extension EditorSession {
         layer.name = name
         layer.shape = shape
         layer.text = text
-        layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
-        let index = document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
+        // Pasted, typed, drawn or imported pixels belong to the board being edited, the same as a new blank
+        // layer does, unless the selection already sits inside a folder or a board.
+        let placement = newLayerPlacement(boardSize: false)
+        layer.parentID = placement.parent
+        let index = placement.parent.flatMap { group in document.layers.lastIndex { $0.parentID == group }.map { $0 + 1 } }
+            ?? document.layers.firstIndex { $0.id == activeLayerID }.map { $0 + 1 } ?? document.layers.count
         finishOpacityEdit()
         beginEdit(editName)
         self.document?.layers.insert(layer, at: index)

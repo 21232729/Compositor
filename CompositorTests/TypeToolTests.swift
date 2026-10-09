@@ -502,4 +502,62 @@ struct TypeToolTests {
         session.closeColorPicker(commit: false)
         #expect(session.textDraft?.style == colored)
     }
+
+    @Test func scriptAppliesToSelectionAndFollowsEdits() {
+        var style = LayerTextStyle()
+        style.content = "自由1"
+        // Raise the trailing "1" as superscript.
+        style.setScript(.superscript, in: NSRange(location: 2, length: 1))
+        #expect(style.isValid)
+        #expect(style.scriptRuns == [LayerTextScriptRun(location: 2, length: 1, script: .superscript)])
+        #expect(style.script(at: 1) == .none && style.script(at: 2) == .superscript)
+        // A second, adjacent subscript run stays separate.
+        style.content = "自由12"
+        style.setScript(.subscript, in: NSRange(location: 3, length: 1))
+        #expect(style.script(at: 2) == .superscript && style.script(at: 3) == .subscript)
+        // Clearing the range returns it to the baseline and drops the run.
+        style.setScript(.none, in: NSRange(location: 2, length: 1))
+        #expect(style.script(at: 2) == .none && style.script(at: 3) == .subscript)
+        // Whole-text superscript collapses to a single run; clearing all removes the list.
+        style.setScript(.superscript, in: NSRange(location: 0, length: style.content.utf16.count))
+        #expect(style.scriptRuns?.count == 1)
+        style.setScript(.none, in: NSRange(location: 0, length: style.content.utf16.count))
+        #expect(style.scriptRuns == nil)
+    }
+
+    @Test func superscriptRendersRaisedAndIsValid() throws {
+        var style = LayerTextStyle()
+        style.content = "AB"
+        style.fontSize = 72
+        style.red = 1
+        let plain = try EditorSession.textImage(style)
+        style.setScript(.superscript, in: NSRange(location: 1, length: 1))
+        let attributed = EditorSession.attributedText(style)
+        // The raised letter carries a baseline offset and a smaller face.
+        let offset = attributed.attribute(.baselineOffset, at: 1, effectiveRange: nil) as? CGFloat
+        #expect((offset ?? 0) > 0)
+        let raisedFont = attributed.attribute(.font, at: 1, effectiveRange: nil) as? NSFont
+        #expect((raisedFont?.pointSize ?? 72) < 72)
+        let raised = try EditorSession.textImage(style)
+        #expect(raised.width > 0 && raised.height > 0)
+        // Raising a letter is a real change to the raster.
+        #expect(raised.width != plain.width || raised.height != plain.height)
+    }
+
+    @Test func selectedScriptSurvivesReopening() async throws {
+        let session = makeSession()
+        session.beginText(at: CGPoint(x: 30, y: 40))
+        session.textDraft?.style.content = "Hello"
+        session.textDraft?.selection = NSRange(location: 4, length: 1)
+        session.changeTextStyle { $0.setScript(.superscript, in: session.textDraft?.selection ?? NSRange()) }
+        #expect(session.finishText())
+        let snapshot = try #require(session.projectSnapshot())
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("TextScript-\(UUID()).comp")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try await ProjectStore.shared.save(snapshot, to: url)
+        let reopened = EditorSession()
+        reopened.installProject(try await ProjectStore.shared.load(from: url), from: url)
+        let text = try #require(reopened.document?.layers.last?.liveText)
+        #expect(text.style.scriptRuns == [LayerTextScriptRun(location: 4, length: 1, script: .superscript)])
+    }
 }

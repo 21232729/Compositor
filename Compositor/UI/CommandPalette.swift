@@ -210,10 +210,12 @@ extension CommandPaletteEntry {
             ("Rectangle", "U", .shape, { $0.shapeKind = .rectangle }),
             ("Ellipse", "U", .shape, { $0.shapeKind = .ellipse }),
             ("Line", "U", .shape, { $0.shapeKind = .line }),
+            ("Pen", "P", .pen, nil),
             ("Type", "T", .type, nil),
             ("Eyedropper", "I", .eyedropper, nil),
             ("Hand", "H", .hand, nil),
             ("Zoom", "Z", .zoom, nil),
+            ("Artboard", "K", .artboard, nil),
         ]
         return tools.map { name, key, tool, setup in
             CommandPaletteEntry(id: "Tool › \(name)", shortcut: key, isEnabled: session.document != nil,

@@ -34,23 +34,48 @@ extension EditorSession {
     /// Tiled raster edit of the active layer's pixels or mask, within the shared pixel budgets.
     func makeRasterEdit(for layer: ImageLayer, settings: BrushSettings = BrushSettings(), growsMask: Bool = false) throws -> BrushStroke {
         guard let document else { throw ProjectError.tooLarge }
-        let stroke = try BrushStroke(layer: layer, mask: isMaskSelected, settings: settings, canvas: document.size, growsMask: growsMask)
+        // Painting is confined to the board the layer sits on, so a stroke or a fill lands on that board
+        // and never grows the layer past it; a plain document paints across its whole canvas.
+        let bounds = rasterCanvas(for: layer)
+        let stroke = try BrushStroke(layer: layer, mask: isMaskSelected, settings: settings, canvas: bounds, growsMask: growsMask)
         let used = document.layers.filter { $0.id != layer.id }.reduce(0) { total, layer in
             let image = isMaskSelected ? layer.mask?.asset.image : layer.asset?.image
             return total + (image.map { $0.width * $0.height } ?? 0)
         }
         stroke.pixelLimit = DocumentLimits.documentPixelBudget - used
-        stroke.selectionClip = try selection?.clip(canvas: document.size)
+        stroke.selectionClip = try selection?.clip(canvas: bounds.size)
         if !isMaskSelected, layer.mask != nil {
             let maskPixels = document.layers.filter { $0.id != layer.id }.reduce(0) { $0 + ($1.mask.map { $0.asset.image.width * $0.asset.image.height } ?? 0) }
             stroke.pixelLimit = min(stroke.pixelLimit, DocumentLimits.documentPixelBudget - maskPixels)
         }
         return stroke
     }
+
+    /// The document-space rect a raster edit on `layer` is allowed to touch: the board the layer belongs
+    /// to, or the whole canvas when it is not scoped to one.
+    func rasterCanvas(for layer: ImageLayer) -> CGRect {
+        guard let document, usesArtboards else { return CGRect(origin: .zero, size: document?.size ?? .zero) }
+        var parent = layer.parentID
+        var steps = 0
+        while let id = parent, steps < 64 {
+            if let group = document.layers.first(where: { $0.id == id }), let boardID = group.artboardID,
+               let board = document.artboards.first(where: { $0.id == boardID }) {
+                return board.rect
+            }
+            parent = document.layers.first(where: { $0.id == id })?.parentID
+            steps += 1
+        }
+        return CGRect(origin: .zero, size: document.size)
+    }
     func beginBrush(at point: CGPoint) {
         // Spot Healing and Clone Stamp rework image pixels; they have nothing to do on a mask.
         if tool == .blur, blurMode != .blur { beginWarp(at: point); return }
         guard tool == .brush || tool == .blur || (tool.isBrushTool && !isMaskSelected) else { return }
+        // An artboard's group row stands for the board's rectangle, which has no pixels: painting on it makes
+        // a layer inside the board, the way painting a folder does not paint the folder itself.
+        if !isMaskSelected, usesArtboards, activeLayer == nil || (activeLayer?.isGroup == true && activeLayer?.artboardID != nil) {
+            addBlankLayer()
+        }
         guard canPaint, let layer = activeLayer, let document else { brushError = paintRefusal; return }
         var sourceOffset: CGSize?
         if tool == .cloneStamp {

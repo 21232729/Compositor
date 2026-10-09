@@ -50,7 +50,8 @@ brew install --cask robbietilton-compositor
 - Clone Stamp, aligned or not, sampling one layer or all of them
 - Blur tool, on pixels or masks
 - Gradient tool and Shape tool (rectangles, rounded rectangles, ellipses and lines), which stay editable rather than being rasterized
-- Type tool (T): inline multiline editing in draggable, resizable paragraph boxes; font, size, color, alignment and spacing in the tool header; transform text and use it as a clipping mask
+- Type tool (T): inline multiline editing in draggable, resizable paragraph boxes; a Photoshop-style family and style pair of pickers, size, color, alignment, tracking and leading in the tool header; per-selection color, font and superscript or subscript (角标) on any range of the text; transform text and use it as a clipping mask. Committing with Done or ⌘↵ hands the tool to Move, so the new layer can be dragged at once
+- Pen tool for paths, in the same toolbar group as the Brush — right-click a grouped tool to switch within it, and a group with a hidden tool carries a corner mark
 - Eyedropper and a full color picker
 
 ### Adjustments and filters
@@ -63,6 +64,7 @@ brew install --cask robbietilton-compositor
 
 ### Canvas and files
 - Multiple projects in tabs
+- Multiple artboards on one document (the Artboard tool): create, move and resize boards, and each is a group in the Layers panel that holds its own layers. Exporting can write a single board as its own PNG. Right-click a board's on-canvas size label to type an exact width and height
 - Search Commands (⌘F): find every menu command and tool by name, as in Raycast or Obsidian, and run it with Return
 - Toggle Fullscreen (F): the canvas alone on black over the whole screen, with every panel put away; F or Esc brings them back
 - Rulers (⌘R), guides dragged from them, a layout grid with adjustable spacing and subdivisions, and Snap To for guides, grid, layers and document bounds
@@ -88,6 +90,22 @@ brew install --cask robbietilton-compositor
 ## Building
 
 Open `Compositor.xcodeproj` and run the **Compositor** scheme.
+
+From the command line, without any signing certificate in the keychain:
+
+```sh
+xcodebuild -project Compositor.xcodeproj -scheme Compositor -configuration Release build \
+  CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+```
+
+The app lands in `~/Library/Developer/Xcode/DerivedData/Compositor-*/Build/Products/Release/`. Copy it to `/Applications`:
+
+```sh
+rm -rf /Applications/Compositor.app
+cp -R ~/Library/Developer/Xcode/DerivedData/Compositor-*/Build/Products/Release/Compositor.app /Applications/
+```
+
+An unsigned build is ad-hoc signed for Apple silicon, so a copy downloaded from GitHub needs one of these to open the first time: right-click the app and choose **Open**, or clear its quarantine flag with `xattr -dr com.apple.quarantine /Applications/Compositor.app`.
 
 ## Releasing
 

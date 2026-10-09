@@ -56,7 +56,8 @@ final class CanvasTextView: NSTextView {
             return
         }
         if (event.keyCode == 36 || event.keyCode == 76), event.modifierFlags.contains(.command) {
-            _ = editor?.canvas?.session.finishText()
+            // Commit and step back to Move, the way finishing text in Photoshop lets you reposition it.
+            if editor?.canvas?.session.finishText() == true { editor?.canvas?.session.selectTool(.move) }
             return
         }
         holdsSelection = false

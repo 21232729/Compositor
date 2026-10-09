@@ -215,13 +215,18 @@ final class ProjectWorkspace {
               sourceTab.session.canEditLayers, let snapshot = sourceTab.session.projectSnapshot(),
               let sourceDocument = sourceTab.session.document else { return }
         if let destination, destination == sourceTab.id { return }
+        // An artboard travels with what is on it, so naming the board's group row brings its layers too.
+        let boards = sourceDocument.layers
+            .filter { ids.contains($0.id) && $0.isGroup && $0.artboardID != nil }
+            .compactMap(\.artboardID)
+        let ids = ids + sourceTab.session.layerSubtrees(boards)
         let target: ProjectTab
         if let destination {
             guard let existing = tabs.first(where: { $0.id == destination }), existing.session.canStartProjectOperation else { return }
             target = existing
         } else { target = addTab(reuseEmpty: false) }
         guard target.session.document == nil || target.session.canEditLayers else { return }
-        let included = ids.reduce(into: Set(ids)) { $0.formUnion(sourceTab.session.descendantIDs(of: $1)) }
+        let included = Set(ids)
         var copied = sourceDocument.layers.filter { included.contains($0.id) }
         let used = target.session.document?.layers.reduce(0) { $0 + ($1.asset.map { $0.image.width * $0.image.height } ?? 0) } ?? 0
         let added = copied.reduce(0) { $0 + ($1.asset.map { $0.image.width * $0.image.height } ?? 0) }
@@ -248,18 +253,44 @@ final class ProjectWorkspace {
                 ? copied.first(where: { $0.id == id })?.transform.center ?? CGPoint(x: sourceDocument.size.width/2, y: sourceDocument.size.height/2)
                 : { let r = pictured.dropFirst().reduce(pictured[0]) { $0.union($1) }; return CGPoint(x: r.midX, y: r.midY) }()
             let center = point ?? CGPoint(x: size.width/2, y: size.height/2)
+            // A copied artboard brings its rectangle with it, dropped clear to the right of the board it came
+            // from, and every layer on it moves by the same amount so the content stays where it was drawn.
+            var boards: [UUID: UUID] = [:]
+            var newBoard: Artboard?
+            var shift = CGSize.zero
+            if let group = copied.first(where: { $0.isGroup && $0.artboardID != nil }),
+               let sourceID = group.artboardID,
+               let board = sourceDocument.artboards.first(where: { $0.id == sourceID }) {
+                let gap: CGFloat = 40
+                shift = CGSize(width: CGFloat(board.width) + gap, height: 0)
+                let copy = Artboard(name: board.name + " copy",
+                                    origin: CGPoint(x: board.origin.x + shift.width, y: board.origin.y), width: board.width, height: board.height)
+                boards[sourceID] = copy.id
+                newBoard = copy
+            }
             let layers = copied.map { layer -> ImageLayer in
                 var transform = layer.transform
                 transform.origin.x += center.x-anchor.x; transform.origin.y += center.y-anchor.y
+                transform.origin.x += shift.width; transform.origin.y += shift.height
                 var mask = layer.mask
-                mask?.placement?.origin.x += center.x-anchor.x; mask?.placement?.origin.y += center.y-anchor.y
+                if var detached = mask?.placement {
+                    detached.origin.x += center.x-anchor.x + shift.width
+                    detached.origin.y += center.y-anchor.y + shift.height
+                    mask?.placement = detached
+                }
                 return ImageLayer(id: mapping[layer.id]!, asset: layer.asset, name: layer.name, isVisible: layer.isVisible,
                     transform: transform, parentID: layer.parentID.flatMap { mapping[$0] }, isGroup: layer.isGroup,
-                    opacity: layer.opacity, blendMode: layer.blendMode, mask: mask, maskSourceID: layer.maskSourceID.flatMap { mapping[$0] }, adjustment: layer.adjustment, shape: layer.shape, effects: layer.effects, text: layer.text)
+                    opacity: layer.opacity, blendMode: layer.blendMode, mask: mask, maskSourceID: layer.maskSourceID.flatMap { mapping[$0] }, adjustment: layer.adjustment, shape: layer.shape, effects: layer.effects, text: layer.text,
+                    artboardID: layer.artboardID.flatMap { boards[$0] })
             }
             target.session.isProjectBusy = false
             target.session.beginEdit("Copy Layers from Project")
             if target.session.document == nil { target.session.createDocument(width: Int(size.width), height: Int(size.height)) }
+            if var newBoard {
+                newBoard.origin.x += center.x-anchor.x
+                newBoard.origin.y += center.y-anchor.y
+                target.session.document?.artboards.append(newBoard)
+            }
             target.session.document?.layers.append(contentsOf: layers)
             target.session.activeLayerID = mapping[id]
             target.session.selectedLayerIDs = Set(ids.compactMap { mapping[$0] })

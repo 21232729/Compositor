@@ -190,12 +190,12 @@ final class BrushStroke {
 
     /// `growsMask`: a brush on a mask can paint anywhere on the canvas, as Photoshop's does, growing the mask past its
     /// layer. Other edits of a mask stay within it.
-    init(layer: ImageLayer, mask: Bool, settings: BrushSettings, canvas: CGSize, useGPU: Bool = true, growsMask: Bool = false) throws {
+    init(layer: ImageLayer, mask: Bool, settings: BrushSettings, canvas: CGRect, useGPU: Bool = true, growsMask: Bool = false) throws {
         gpu = useGPU ? MetalBrushCoverage.shared : nil
         self.layer = layer
         isMask = mask
         self.settings = settings
-        self.canvas = CGRect(origin: .zero, size: canvas)
+        self.canvas = canvas
         // A mask on its own placement is painted in its own pixel grid; otherwise the grid is the layer's.
         let placedMask = mask ? layer.mask.flatMap { mask in mask.placement.map { (mask.asset.image, $0) } } : nil
         let base = placedMask?.1 ?? layer.transform

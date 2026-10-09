@@ -50,6 +50,7 @@ final class CanvasView: NSView {
     }
     private let sampleRing = SampleRingOverlay()
     private let lines = CanvasLinesOverlay()
+    private let artboardOverlay = ArtboardOverlay()
     private var samplingOriginal = PaletteColor.black
     let session: EditorSession
     private var spaceHeld = false
@@ -542,6 +543,18 @@ final class CanvasView: NSView {
         let textTransform: LayerTransform?
         /// The mask shown by itself, which may be one the composite doesn't draw (disabled, or a folder's).
         let maskAlone: ObjectIdentifier?
+        /// Artboards affect what the canvas draws but aren't layers, so they're tracked on their own.
+        struct Artboard: Equatable {
+            let id: UUID
+            let name: String
+            let origin: CGPoint
+            let width: Int
+            let height: Int
+        }
+        let artboards: [Artboard]
+        let activeArtboardID: UUID?
+        /// The in-progress artboard rectangle while the user is dragging.
+        let artboardDraftRect: CGRect?
     }
 
     @discardableResult
@@ -575,7 +588,10 @@ final class CanvasView: NSView {
                 DisplayState.FolderMask(id: $0.id, maskID: $0.mask?.enabledImage.map { ObjectIdentifier($0) },
                                         transform: session.displayedTransform(for: $0))
             }, textStyle: session.textDraft?.style, textTransform: session.textDraft == nil ? nil : inlineTextEditor?.shownTransform,
-            maskAlone: session.maskAloneLayer?.mask.map { ObjectIdentifier($0.asset.image) })
+            maskAlone: session.maskAloneLayer?.mask.map { ObjectIdentifier($0.asset.image) },
+            artboards: (document?.artboards ?? []).map { DisplayState.Artboard(id: $0.id, name: $0.name, origin: $0.origin, width: $0.width, height: $0.height) },
+            activeArtboardID: document?.activeArtboardID,
+            artboardDraftRect: session.artboardDraft?.rect)
         var changed = false
         if displayedState != state {
             if let previous = displayedState, previous.documentID == state.documentID,
@@ -590,6 +606,7 @@ final class CanvasView: NSView {
             } else { needsDisplay = true }
             displayedState = state
             changed = true
+            artboardOverlay.needsDisplay = true
         }
         if documentPresenceChanged {
             updateTrackingAreas()
@@ -599,6 +616,7 @@ final class CanvasView: NSView {
             displayedTool = session.tool
             updateTrackingAreas()
             window?.invalidateCursorRects(for: self)
+            artboardOverlay.needsDisplay = true
         }
         if displayedPicking != picking || displayedTargeting != session.hueTargeting {
             displayedPicking = picking
@@ -654,11 +672,14 @@ final class CanvasView: NSView {
         addSubview(transformOverlay)
         addSubview(brushCursor)
         addSubview(sampleRing)
+        addSubview(artboardOverlay)
+        artboardOverlay.session = session
         // Each overlay draws into its own layer. Without one, redrawing a transparent overlay (every crop
         // or transform drag, marching-ants tick, or cursor move) makes AppKit redraw the canvas beneath —
         // the whole checkerboard and layer composite. All three get layers so they keep their stacking order.
-        for overlay in [lines, transformOverlay, brushCursor, sampleRing] as [NSView] { overlay.wantsLayer = true }
+        for overlay in [lines, transformOverlay, brushCursor, sampleRing, artboardOverlay] as [NSView] { overlay.wantsLayer = true }
         lines.autoresizingMask = [.width, .height]
+        artboardOverlay.autoresizingMask = [.width, .height]
         lines.drawLines = { [weak self] dirtyRect in self?.drawLines(in: dirtyRect) }
         clipsToBounds = true
         setAccessibilityElement(true)
@@ -865,6 +886,7 @@ final class CanvasView: NSView {
         // The grid and a text frame being dragged follow the pixels under them.
         if lines.frame != bounds { lines.frame = bounds }
         lines.needsDisplay = true
+        if artboardOverlay.frame != bounds { artboardOverlay.frame = bounds }
         if drawOnGPU(dirtyRect) { return }
         NSColor(white: surround, alpha: 1).setFill()
         dirtyRect.fill()
@@ -876,31 +898,51 @@ final class CanvasView: NSView {
                                        height: pixels.height * session.viewport.pointsPerPixel))
         guard rect.intersects(bounds), rect.intersects(dirtyRect) else { return }
         context.saveGState()
-        context.setShadow(offset: CGSize(width: 0, height: 3), blur: 14,
-                          color: NSColor.black.withAlphaComponent(0.35).cgColor)
-        context.setFillColor(NSColor(white: 0.26, alpha: 1).cgColor)
-        context.fill(rect)
-        context.restoreGState()
-        context.saveGState()
-        context.clip(to: rect.intersection(dirtyRect))
-        context.setFillColor(NSColor(white: 0.30, alpha: 1).cgColor)
-        context.fill(rect)
-        // Work scales with the visible viewport, not document dimensions.
-        let tile: CGFloat = 10
-        let visible = rect.intersection(bounds).intersection(dirtyRect)
-        if !visible.isNull, !visible.isEmpty {
-            let minX = Int(floor((visible.minX - rect.minX) / tile))
-            let maxX = Int(ceil((visible.maxX - rect.minX) / tile))
-            let minY = Int(floor((visible.minY - rect.minY) / tile))
-            let maxY = Int(ceil((visible.maxY - rect.minY) / tile))
-            context.setFillColor(NSColor(white: 0.35, alpha: 1).cgColor)
-            for row in minY..<maxY {
-                for column in minX..<maxX where (row + column).isMultiple(of: 2) {
-                    context.fill(CGRect(x: rect.minX + CGFloat(column) * tile,
-                                        y: rect.minY + CGFloat(row) * tile, width: tile, height: tile))
+        // A document of artboards has no one canvas: the boards on the pasteboard are the surfaces, the way
+        // Photoshop shows them. The shadow, checkerboard and border belong to a single-canvas document.
+        if !session.usesArtboards {
+            context.setShadow(offset: CGSize(width: 0, height: 3), blur: 14,
+                              color: NSColor.black.withAlphaComponent(0.35).cgColor)
+            context.setFillColor(NSColor(white: 0.26, alpha: 1).cgColor)
+            context.fill(rect)
+            context.restoreGState()
+            context.saveGState()
+            context.clip(to: rect.intersection(dirtyRect))
+            context.setFillColor(NSColor(white: 0.30, alpha: 1).cgColor)
+            context.fill(rect)
+            // Work scales with the visible viewport, not document dimensions.
+            let tile: CGFloat = 10
+            let visible = rect.intersection(bounds).intersection(dirtyRect)
+            if !visible.isNull, !visible.isEmpty {
+                let minX = Int(floor((visible.minX - rect.minX) / tile))
+                let maxX = Int(ceil((visible.maxX - rect.minX) / tile))
+                let minY = Int(floor((visible.minY - rect.minY) / tile))
+                let maxY = Int(ceil((visible.maxY - rect.minY) / tile))
+                context.setFillColor(NSColor(white: 0.35, alpha: 1).cgColor)
+                for row in minY..<maxY {
+                    for column in minX..<maxX where (row + column).isMultiple(of: 2) {
+                        context.fill(CGRect(x: rect.minX + CGFloat(column) * tile,
+                                            y: rect.minY + CGFloat(row) * tile, width: tile, height: tile))
+                    }
                 }
             }
+        } else {
+            context.restoreGState()
+            context.saveGState()
+            // The boards themselves are the white surfaces; a board clips what is painted on it.
+            for artboard in document.artboards {
+                let board = CGRect(
+                    origin: session.viewport.viewPoint(from: artboard.rect.origin, documentSize: document.size),
+                    size: CGSize(width: artboard.rect.width * session.viewport.pointsPerPixel,
+                                 height: artboard.rect.height * session.viewport.pointsPerPixel))
+                context.saveGState()
+                context.clip(to: board)
+                context.setFillColor(NSColor.white.cgColor)
+                context.fill(board)
+                context.restoreGState()
+            }
         }
+        let visible = rect.intersection(bounds).intersection(dirtyRect)
         if session.viewport.zoom >= Self.crispZoom, !visible.isNull, !visible.isEmpty {
             drawDocumentPixels(covering: visible, clippedTo: pixels, document: document, in: context)
         } else {
@@ -912,9 +954,11 @@ final class CanvasView: NSView {
             context.endTransparencyLayer()
         }
         context.restoreGState()
-        context.setStrokeColor(NSColor.white.withAlphaComponent(0.13).cgColor)
-        context.setLineWidth(1 / session.viewport.backingScale)
-        context.stroke(rect)
+        if !session.usesArtboards {
+            context.setStrokeColor(NSColor.white.withAlphaComponent(0.13).cgColor)
+            context.setLineWidth(1 / session.viewport.backingScale)
+            context.stroke(rect)
+        }
     }
 
     /// From 200% (2 screen pixels per document pixel) the canvas shows hard-edged
@@ -1157,6 +1201,7 @@ final class CanvasView: NSView {
             drawOwn(id, context)
             guard id == session.activeLayerID else { return }
             drawShapeDraft(scale: scale, center: center, in: context)
+            drawPenDraft(scale: scale, center: center, in: context)
             drawNewText(context)
         }
         // New text goes where its layer will: just above the active layer, or on top when that isn't drawn (a
@@ -1263,6 +1308,76 @@ final class CanvasView: NSView {
             context.addPath(draft.kind.path(in: rect, cornerRadius: draft.cornerRadius * scale))
             context.fillPath()
         }
+        context.restoreGState()
+    }
+
+    /// The pen path being drawn: the bezier curves, anchor dots, and handle lines.
+    private func drawPenDraft(scale: CGFloat, center: (CGPoint) -> CGPoint, in context: CGContext) {
+        guard let draft = session.penDraft else { return }
+        let path = draft.previewPath
+        guard path.points.count >= 1 else { return }
+
+        context.saveGState()
+
+        // Draw the bezier curves
+        context.setStrokeColor(NSColor(calibratedRed: 0.2, green: 0.6, blue: 1.0, alpha: 1.0).cgColor)
+        context.setLineWidth(1.5)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+
+        // Draw the bezier curves manually, transforming each point through center()
+        context.beginPath()
+        if let first = path.points.first {
+            context.move(to: center(first.position))
+            for i in 1..<path.points.count {
+                let prev = path.points[i - 1]
+                let curr = path.points[i]
+                context.addCurve(to: center(curr.position),
+                    control1: center(prev.controlOut),
+                    control2: center(curr.controlIn))
+            }
+            if path.isClosed, let first = path.points.first {
+                context.addLine(to: center(first.position))
+            }
+        }
+        context.strokePath()
+
+        // Draw handle lines and anchor dots
+        for (i, point) in path.points.enumerated() {
+            let pos = center(point.position)
+            let cIn = center(point.controlIn)
+            let cOut = center(point.controlOut)
+
+            // Handle lines (only for non-corner points)
+            if !point.isCorner {
+                context.setStrokeColor(NSColor(calibratedRed: 0.5, green: 0.5, blue: 0.5, alpha: 0.8).cgColor)
+                context.setLineWidth(1)
+                context.beginPath()
+                context.move(to: cIn)
+                context.addLine(to: pos)
+                context.addLine(to: cOut)
+                context.strokePath()
+
+                // Handle dots
+                context.setFillColor(NSColor(calibratedRed: 0.2, green: 0.6, blue: 1.0, alpha: 1.0).cgColor)
+                context.fill(CGRect(x: cIn.x - 3, y: cIn.y - 3, width: 6, height: 6))
+                context.fill(CGRect(x: cOut.x - 3, y: cOut.y - 3, width: 6, height: 6))
+            }
+
+            // Anchor dot
+            let isFirst = (i == 0 && path.points.count >= 2)
+            let anchorSize: CGFloat = isFirst ? 8 : 6
+            context.setFillColor(isFirst
+                ? NSColor(calibratedRed: 0.0, green: 0.8, blue: 0.0, alpha: 1.0).cgColor
+                : NSColor(calibratedRed: 1.0, green: 1.0, blue: 1.0, alpha: 1.0).cgColor)
+            context.setStrokeColor(NSColor(calibratedRed: 0.2, green: 0.6, blue: 1.0, alpha: 1.0).cgColor)
+            context.setLineWidth(1.5)
+            let anchorRect = CGRect(x: pos.x - anchorSize / 2, y: pos.y - anchorSize / 2,
+                                    width: anchorSize, height: anchorSize)
+            context.fill(anchorRect)
+            context.stroke(anchorRect)
+        }
+
         context.restoreGState()
     }
 
@@ -1532,7 +1647,7 @@ final class CanvasView: NSView {
         let side = max(1, Int(diameter.rounded(.up)))
         let size = CGSize(width: side, height: side)
         let settings = BrushSettings(diameter: diameter, hardness: hardness, red: 1, green: 1, blue: 1)
-        if let stroke = try? BrushStroke(layer: ImageLayer(name: "Tip", blankSize: size), mask: false, settings: settings, canvas: size),
+        if let stroke = try? BrushStroke(layer: ImageLayer(name: "Tip", blankSize: size), mask: false, settings: settings, canvas: CGRect(origin: .zero, size: size)),
            (try? stroke.append(CGPoint(x: CGFloat(side) / 2, y: CGFloat(side) / 2))) != nil,
            (try? stroke.flush()) != nil,
            let painted = try? stroke.paintSnapshot(),
@@ -1706,6 +1821,13 @@ final class CanvasView: NSView {
     /// change its hardness. The brush circle stays where the press was.
     private var brushTipDrag: (start: CGPoint, diameter: CGFloat, hardness: CGFloat, hardnessShown: Bool)?
     override func rightMouseDown(with event: NSEvent) {
+        // On the Artboard tool, right-clicking a board's size label opens the exact-size editor.
+        if session.tool == .artboard, let document = session.document,
+           let board = artboardSizeLabelAt(event),
+           session.artboardResize == nil {
+            session.artboardResize = ArtboardResizeTarget(id: board.id, name: board.name, width: board.width, height: board.height)
+            return
+        }
         guard session.tool.isBrushTool, session.brushStroke == nil, session.warpStroke == nil, !spaceHeld else {
             super.rightMouseDown(with: event); return
         }
@@ -1713,6 +1835,28 @@ final class CanvasView: NSView {
         brushTipDrag = (point, session.brushSettings.diameter, session.brushSettings.hardness, event.modifierFlags.contains(.shift))
         brushPointer = point
         updateBrushCursor()
+    }
+
+    /// The artboard whose on-screen size label sits under a right-click, matching the geometry `ArtboardOverlay` draws.
+    private func artboardSizeLabelAt(_ event: NSEvent) -> Artboard? {
+        guard let document = session.document else { return nil }
+        let click = convert(event.locationInWindow, from: nil)
+        let scale = session.viewport.pointsPerPixel
+        let nameAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium)]
+        let sizeAttrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10)]
+        for artboard in document.artboards {
+            let rect = CGRect(origin: session.viewport.viewPoint(from: artboard.rect.origin, documentSize: document.size),
+                              size: CGSize(width: artboard.rect.width * scale, height: artboard.rect.height * scale))
+            let labelSize = artboard.name.size(withAttributes: nameAttrs)
+            let labelY = rect.minY - labelSize.height - 4
+            let sizeText = "\(artboard.width) × \(artboard.height)"
+            let sizeTextSize = sizeText.size(withAttributes: sizeAttrs)
+            // A generous hit box around the number the label draws.
+            let box = CGRect(x: rect.minX - 4, y: labelY - sizeTextSize.height - 6,
+                             width: max(sizeTextSize.width, labelSize.width) + 12, height: sizeTextSize.height + 8)
+            if box.contains(click) { return artboard }
+        }
+        return nil
     }
     override func rightMouseDragged(with event: NSEvent) {
         guard let drag = brushTipDrag else { super.rightMouseDragged(with: event); return }
@@ -1798,6 +1942,17 @@ final class CanvasView: NSView {
             }
             return
         }
+        // A plain click with a painting or drawing tool targets the board it lands on, the way clicking a
+        // layer in another board does in Photoshop: the empty middle of an artboard is part of that board,
+        // not dead canvas, so the stroke goes where it was drawn. The board picks something on it to work on,
+        // so a click on a bare board starts a layer rather than landing on the board's own group row.
+        // Picking and selecting are left alone.
+        if let document = session.document, !spaceHeld, event.modifierFlags.isDisjoint(with: [.shift, .command, .option, .control]),
+           ![NavigationTool.artboard, .crop, .move, .hand, .zoom, .eyedropper].contains(session.tool),
+           !session.tool.isSelectionTool,
+           let board = session.artboard(at: session.viewport.documentPoint(from: point, documentSize: document.size)) {
+            session.focusArtboard(board.id)
+        }
         if spaceHeld || session.tool == .hand {
             lastDragPoint = point
             // Held closed for the whole drag, as a crop or transform drag holds its cursor: Space repeats while it's
@@ -1837,6 +1992,17 @@ final class CanvasView: NSView {
         } else if session.tool == .shape, let document = session.document {
             session.beginShape(at: snappedCorner(session.viewport.documentPoint(from: point, documentSize: document.size),
                                                  flags: event.modifierFlags))
+        } else if session.tool == .pen, let document = session.document {
+            let docPoint = session.viewport.documentPoint(from: point, documentSize: document.size)
+            if session.penDraft == nil {
+                session.beginPen(at: docPoint)
+            } else if session.penCanClose(at: docPoint) {
+                session.closePenPath()
+                synchronizeDisplay()
+            } else {
+                session.beginNextPenAnchor(at: docPoint)
+            }
+            synchronizeDisplay()
         } else if session.tool == .crop {
             beginCropDrag(at: point)
         } else if session.tool == .move {
@@ -1846,6 +2012,20 @@ final class CanvasView: NSView {
             beginTransformDrag(at: point, modifiers: event.modifierFlags)
         } else if session.tool == .zoom {
             zoomDrag = (point, session.viewport.zoom, false)
+        } else if session.tool == .artboard, let document = session.document {
+            let docPoint = session.viewport.documentPoint(from: point, documentSize: document.size)
+            // Check if clicking on a corner handle for resizing
+            if let corner = session.artboardCorner(at: docPoint) {
+                session.beginArtboardResize(artboardID: corner.artboardID, corner: corner.mode, at: docPoint)
+            } else if let artboard = session.artboard(at: docPoint) {
+                // Clicking inside an artboard - start moving it
+                session.setActiveArtboard(artboard.id)
+                session.beginArtboardMove(artboardID: artboard.id, at: docPoint)
+            } else {
+                // Clicking outside - start creating a new artboard
+                session.beginArtboardCreation(at: docPoint)
+            }
+            synchronizeDisplay()
         }
     }
     override func mouseDragged(with event: NSEvent) {
@@ -1912,6 +2092,23 @@ final class CanvasView: NSView {
             session.dragShape(to: snappedCorner(session.viewport.documentPoint(from: point, documentSize: document.size),
                                                 flags: event.modifierFlags),
                               square: event.modifierFlags.contains(.shift), fromCenter: event.modifierFlags.contains(.option))
+            synchronizeDisplay()
+            return
+        }
+        if session.penDraft != nil, lastDragPoint == nil, let document = session.document {
+            session.dragPen(to: session.viewport.documentPoint(from: point, documentSize: document.size))
+            synchronizeDisplay()
+            return
+        }
+        if session.artboardDraft != nil, let document = session.document {
+            let docPoint = session.viewport.documentPoint(from: point, documentSize: document.size)
+            session.updateArtboardCreation(to: docPoint)
+            synchronizeDisplay()
+            return
+        }
+        if session.artboardEdit != nil, let document = session.document {
+            let docPoint = session.viewport.documentPoint(from: point, documentSize: document.size)
+            session.updateArtboardEdit(to: docPoint)
             synchronizeDisplay()
             return
         }
@@ -2070,6 +2267,18 @@ final class CanvasView: NSView {
             session.finishShape()
             synchronizeDisplay()
         }
+        if session.penDraft != nil, session.penDraft?.isDragging == true {
+            session.finishPenAnchor()
+            synchronizeDisplay()
+        }
+        if session.artboardDraft != nil {
+            session.commitArtboardCreation()
+            synchronizeDisplay()
+        }
+        if session.artboardEdit != nil {
+            session.commitArtboardEdit()
+            synchronizeDisplay()
+        }
         if hueTargetStart != nil {
             hueTargetStart = nil
             session.endHueTargeting()
@@ -2168,6 +2377,17 @@ final class CanvasView: NSView {
         } else if session.shapeDraft != nil, event.keyCode == 53 {
             session.cancelShape()
             synchronizeDisplay()
+        } else if session.penDraft != nil, [53, 36, 76, 51, 117].contains(event.keyCode) {
+            if event.keyCode == 53 { session.cancelPen() }
+            else if [36, 76].contains(event.keyCode) { session.commitPenOpenPath() }
+            else { session.removeLastPenPoint() }
+            synchronizeDisplay()
+        } else if session.artboardDraft != nil, event.keyCode == 53 {
+            session.cancelArtboardCreation()
+            synchronizeDisplay()
+        } else if session.artboardEdit != nil, event.keyCode == 53 {
+            session.cancelArtboardEdit()
+            synchronizeDisplay()
         } else if session.gradientEdit != nil, event.keyCode == 53 {
             gradientDrag = nil
             session.cancelGradient()
@@ -2233,6 +2453,7 @@ final class CanvasView: NSView {
             case "u":
                 if event.modifierFlags.contains(.shift), session.tool == .shape { session.toggleShapeKind() }
                 else { session.selectTool(.shape) }
+            case "p": session.selectTool(.pen)
             case "i": session.selectTool(.eyedropper)
             // M chooses the Marquee in whichever shape it was last set to; the shape is switched in the tool
             // bar. Ignoring a repeat keeps holding the key from doing anything odd.
@@ -2253,6 +2474,7 @@ final class CanvasView: NSView {
             case "v": session.selectTool(.move)
             case "h": session.selectTool(.hand)
             case "z": session.selectTool(.zoom)
+            case "k": session.selectTool(.artboard)
             default: super.keyDown(with: event)
             }
         } else { super.keyDown(with: event) }
@@ -2272,6 +2494,7 @@ final class CanvasView: NSView {
         cropDrag = nil
         gradientDrag = nil
         session.cancelShape()
+        session.cancelPen()
         if let kind = session.lassoDraft?.kind, kind != .polygonal { session.cancelLasso() }
         if selectionDragStart != nil { selectionDragStart = nil; session.endSelectionMove() }
         if pixelDragStart != nil { pixelDragStart = nil; session.cancelPixelMove() }
@@ -2459,8 +2682,10 @@ final class CanvasView: NSView {
 
     private var renderBounds: CGRect? {
         guard let document = session.document else { return nil }
-        let original = CGRect(origin: .zero, size: document.size)
-        return session.tool == .crop ? original.union(session.cropRect ?? original) : original
+        // With artboards the working area is every board, so a layer on any of them shows; a plain
+        // document renders its own rect. The Crop tool still frames the original canvas.
+        let original = session.usesArtboards ? document.canvasBounds : CGRect(origin: .zero, size: document.size)
+        return session.tool == .crop ? CGRect(x: 0, y: 0, width: document.width, height: document.height).union(session.cropRect ?? original) : original
     }
 
     private func beginCropDrag(at point: CGPoint) {
@@ -2535,6 +2760,25 @@ final class CanvasView: NSView {
         guard session.canEditLayers || session.transformEdit != nil, let document = session.document else { return }
         let pixel = session.viewport.documentPoint(from: point, documentSize: document.size)
         var mode = transformOverlay.geometry?.hit(point)
+        // Artboard-aware auto-select on a plain click: the topmost layer under the pointer wins, a click on a
+        // board's empty area selects the whole board, and a click past every board deselects — so a layer inside
+        // a selected artboard jumps straight to it instead of staying on the group.
+        let plain = !modifiers.contains(.shift) && !modifiers.contains(.command) && !modifiers.contains(.option)
+        if mode == nil, session.usesArtboards, session.transformAutoSelect, session.transformEdit == nil, plain {
+            let visible = document.effectiveVisibleIDs
+            if let layer = document.renderLayers.reversed().first(where: {
+                $0.asset != nil && !$0.isGroup && visible.contains($0.id) && $0.transform.contains(pixel)
+            }) {
+                session.selectLayer(layer.id)
+                mode = .move
+            } else if let board = session.artboard(at: pixel) {
+                session.setActiveArtboard(board.id)
+                mode = .move
+            } else {
+                session.selectLayer(nil)
+                return
+            }
+        }
         if mode == nil, let target = transformPressLayer(at: pixel, flags: modifiers) {
             // Cmd-Shift-click adds the layer under the pointer to the selection (and takes it out again); Cmd-click
             // on its own selects just that one.
@@ -2647,6 +2891,20 @@ extension CanvasView {
         return drawn.transformed(by: CGAffineTransform(translationX: box.minX, y: box.minY))
     }
 
+    /// The pen path being drawn, in frame pixels.
+    private func penDraftImage(placement: GPUPlacement) -> CIImage? {
+        guard let draft = session.penDraft, let renderer = GPUCanvasRenderer.shared, !draft.previewPath.isEmpty else { return nil }
+        let path = draft.previewPath
+        let bounds = path.bounds(strokeWidth: 10)
+        let box = bounds.applying(placement.mapping).insetBy(dx: -10, dy: -10).integral
+        guard box.width >= 1, box.height >= 1, box.width * box.height <= DocumentLimits.maxSurfaceExtent,
+              let context = try? BrushRaster.context(width: Int(box.width), height: Int(box.height), mask: false) else { return nil }
+        context.translateBy(x: -box.minX, y: -box.minY)
+        drawPenDraft(scale: placement.scale, center: { $0.applying(placement.mapping) }, in: context)
+        guard let image = context.makeImage(), let drawn = renderer.image(image, transient: true) else { return nil }
+        return drawn.transformed(by: CGAffineTransform(translationX: box.minX, y: box.minY))
+    }
+
     /// The whole view as `draw(_:)` draws it — the backdrop, the document's shadow and checkerboard, the layers and the
     /// document's edge — in screen pixels, `size` across. Nil when the Core Graphics canvas has to draw it.
     private func gpuFrame(_ document: CanvasDocument, renderer: GPUCanvasRenderer, size: CGSize) -> CIImage? {
@@ -2663,19 +2921,26 @@ extension CanvasView {
         }
         var frame = gray(surround).cropped(to: full)
         guard rect.intersects(full) else { return frame }
-        // The document's shadow, then its checkerboard: 10-point squares from its top-left corner.
-        let shadow = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.35)).cropped(to: rect)
-            .transformed(by: CGAffineTransform(translationX: 0, y: 3 * device)).applyingGaussianBlur(sigma: 7 * device)
-        frame = shadow.composited(over: frame)
-        let tile = 10 * device
-        let squares = gray(0.35).cropped(to: CGRect(x: 0, y: 0, width: tile, height: tile))
-            .composited(over: gray(0.30).cropped(to: CGRect(x: tile, y: 0, width: tile, height: tile)))
-            .composited(over: gray(0.30).cropped(to: CGRect(x: 0, y: tile, width: tile, height: tile)))
-            .composited(over: gray(0.35).cropped(to: CGRect(x: tile, y: tile, width: tile, height: tile)))
-        let offset = NSAffineTransform()
-        offset.translateX(by: rect.minX, yBy: rect.minY)
-        let checkerboard = squares.applyingFilter("CIAffineTile", parameters: [kCIInputTransformKey: offset]).cropped(to: rect)
-        frame = checkerboard.composited(over: frame)
+        // A document of artboards shows the boards on the pasteboard and nothing else; a single-canvas
+        // document shows its shadow, its checkerboard and its border.
+        if !session.usesArtboards {
+            let shadow = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0.35)).cropped(to: rect)
+                .transformed(by: CGAffineTransform(translationX: 0, y: 3 * device)).applyingGaussianBlur(sigma: 7 * device)
+            frame = shadow.composited(over: frame)
+            let tile = 10 * device
+            let squares = gray(0.35).cropped(to: CGRect(x: 0, y: 0, width: tile, height: tile))
+                .composited(over: gray(0.30).cropped(to: CGRect(x: tile, y: 0, width: tile, height: tile)))
+                .composited(over: gray(0.30).cropped(to: CGRect(x: 0, y: tile, width: tile, height: tile)))
+                .composited(over: gray(0.35).cropped(to: CGRect(x: tile, y: tile, width: tile, height: tile)))
+            let offset = NSAffineTransform()
+            offset.translateX(by: rect.minX, yBy: rect.minY)
+            let checkerboard = squares.applyingFilter("CIAffineTile", parameters: [kCIInputTransformKey: offset]).cropped(to: rect)
+            frame = checkerboard.composited(over: frame)
+        }
+        // Each board is a white surface beneath the layers, as in Photoshop.
+        for artboard in document.artboards {
+            frame = gray(1).cropped(to: artboard.rect.applying(mapping)).composited(over: frame)
+        }
         // From 200% the document's own pixels are composited one to one and enlarged as crisp squares.
         let crisp = viewport.zoom >= Self.crispZoom
         let placement = GPUPlacement(mapping: crisp ? .identity : mapping, scale: crisp ? 1 : perPixel, renderer: renderer)
@@ -2683,12 +2948,14 @@ extension CanvasView {
         if crisp { layers = layers.cropped(to: pixels).samplingNearest().transformed(by: mapping) }
         frame = layers.cropped(to: rect).composited(over: frame)
         // The document's edge: a one-pixel line centered on it.
-        let edge = gray(1, alpha: 0.13)
-        for line in [CGRect(x: rect.minX - 0.5, y: rect.minY - 0.5, width: rect.width + 1, height: 1),
-                     CGRect(x: rect.minX - 0.5, y: rect.maxY - 0.5, width: rect.width + 1, height: 1),
-                     CGRect(x: rect.minX - 0.5, y: rect.minY + 0.5, width: 1, height: rect.height - 1),
-                     CGRect(x: rect.maxX - 0.5, y: rect.minY + 0.5, width: 1, height: rect.height - 1)] {
-            frame = edge.cropped(to: line).composited(over: frame)
+        if !session.usesArtboards {
+            let edge = gray(1, alpha: 0.13)
+            for line in [CGRect(x: rect.minX - 0.5, y: rect.minY - 0.5, width: rect.width + 1, height: 1),
+                         CGRect(x: rect.minX - 0.5, y: rect.maxY - 0.5, width: rect.width + 1, height: 1),
+                         CGRect(x: rect.minX - 0.5, y: rect.minY + 0.5, width: 1, height: rect.height - 1),
+                         CGRect(x: rect.maxX - 0.5, y: rect.minY + 0.5, width: 1, height: rect.height - 1)] {
+                frame = edge.cropped(to: line).composited(over: frame)
+            }
         }
         return frame.cropped(to: full)
     }
@@ -3080,6 +3347,7 @@ extension CanvasView {
             guard id == session.activeLayerID else { return image }
             var result = image
             if let shape = shapeDraftImage(placement: placement) { result = shape.composited(over: result) }
+            if let pen = penDraftImage(placement: placement) { result = pen.composited(over: result) }
             if session.textDraft?.layerID == nil, let text = draftText, let placed = placement.place(text.image, transform: text.transform) {
                 result = placed.composited(over: result)
                 drewNewText = true

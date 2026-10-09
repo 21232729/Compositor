@@ -5,6 +5,9 @@ DerivedData/
 *.xcarchive
 *.dmg
 
+# Local scratch kept out of the repo by the agent tooling: build directories, caches and screenshots
+.dsh-*/
+
 # Xcode per-user state
 xcuserdata/
 *.xcuserstate

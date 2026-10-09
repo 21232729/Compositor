@@ -28,6 +28,9 @@ nonisolated struct ProjectManifest: Codable, Sendable {
     var layers: [ProjectLayerRecord]
     /// Alignment guides. Missing on versions 1–7.
     var guides: [CanvasGuide]? = nil
+    /// Artboards and the one being edited. Missing before artboards existed.
+    var artboards: [Artboard]? = nil
+    var activeArtboardID: UUID? = nil
 }
 
 nonisolated struct ProjectLayerRecord: Codable, Sendable {
@@ -53,6 +56,8 @@ nonisolated struct ProjectLayerRecord: Codable, Sendable {
     /// The stroke and drop shadow drawn around the layer.
     var effects: LayerEffects? = nil
     var text: LayerTextStyle? = nil
+    /// The artboard whose group this layer is. Missing before artboards existed.
+    var artboardID: UUID? = nil
 }
 
 nonisolated struct ProjectSnapshot: @unchecked Sendable {

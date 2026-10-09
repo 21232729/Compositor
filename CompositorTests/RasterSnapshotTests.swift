@@ -103,7 +103,7 @@ struct RasterSnapshotTests {
         let layer = try #require(session.activeLayer)
         let stroke = try BrushStroke(layer: layer, mask: false,
             settings: BrushSettings(diameter: 120, hardness: 0, red: 1),
-            canvas: CGSize(width: 4000, height: 4000), useGPU: false)
+            canvas: CGRect(x: 0, y: 0, width: 4000, height: 4000), useGPU: false)
         try stroke.append(CGPoint(x: 500, y: 1000))
         try stroke.append(CGPoint(x: 1300, y: 1000))
         try stroke.flush()

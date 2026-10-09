@@ -4,6 +4,12 @@ nonisolated enum TextAlignment: String, Codable, CaseIterable, Sendable {
     case left = "Left", center = "Center", right = "Right"
 }
 
+/// A run's baseline treatment, as Photoshop's Text Options superscript/subscript buttons. Stored only for the
+/// raised and lowered ranges; ordinary text is `.none` and left out of the run list.
+nonisolated enum TextScript: Int, Codable, Sendable {
+    case none, superscript, `subscript`
+}
+
 nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
     var content = "Text"
     var fontName = "Helvetica"
@@ -32,13 +38,15 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
     var colorRuns: [LayerTextColorRun]? = nil
     /// Letters set in a face other than `fontName`, in the same offsets. Nil when the whole text is one face.
     var fontRuns: [LayerTextFontRun]? = nil
+    /// Letters raised or lowered as superscript/subscript, in the same offsets. Nil when none are.
+    var scriptRuns: [LayerTextScriptRun]? = nil
     var isValid: Bool {
         content.utf16.count <= 100_000 && boxIsValid
         && fontSize.isFinite && (1...2000).contains(fontSize)
         && [red, green, blue].allSatisfy { $0.isFinite && (0...1).contains($0) }
         && tracking.isFinite && (-100...1000).contains(tracking)
         && leading.isFinite && (0...5000).contains(leading)
-        && colorRunsAreValid && fontRunsAreValid
+        && colorRunsAreValid && fontRunsAreValid && scriptRunsAreValid
     }
     private var colorRunsAreValid: Bool {
         guard let colorRuns else { return true }
@@ -59,6 +67,16 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
             end = run.location + run.length
         }
         return !fontRuns.isEmpty && end <= content.utf16.count
+    }
+    private var scriptRunsAreValid: Bool {
+        guard let scriptRuns else { return true }
+        var end = 0
+        for run in scriptRuns {
+            guard run.script != .none, run.location >= end, run.length > 0,
+                  run.location <= Int.max - run.length else { return false }
+            end = run.location + run.length
+        }
+        return !scriptRuns.isEmpty && end <= content.utf16.count
     }
 
     /// The color of the UTF-16 unit at `index`.
@@ -118,6 +136,25 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
         setUnitFonts(fonts)
     }
 
+    /// The baseline treatment of the UTF-16 unit at `index`.
+    func script(at index: Int) -> TextScript {
+        scriptRuns?.first { $0.location <= index && index < $0.location + $0.length }?.script ?? .none
+    }
+
+    /// Raises or lowers `range` as superscript/subscript. An empty range, or one covering the whole text, changes
+    /// all of it; passing `.none` returns the range to the baseline.
+    mutating func setScript(_ script: TextScript, in range: NSRange) {
+        let count = content.utf16.count
+        let start = max(0, min(range.location, count)), end = max(start, min(range.location + range.length, count))
+        if start == end || (start == 0 && end == count) {
+            scriptRuns = script == .none ? nil : (end > start ? [LayerTextScriptRun(location: start, length: end - start, script: script)] : nil)
+            return
+        }
+        var scripts = unitScripts
+        for index in start..<end { scripts[index] = script }
+        setUnitScripts(scripts)
+    }
+
     /// Keeps each letter's color and face when `range` of `content` is replaced by `length` new UTF-16 units, which
     /// take them from the letter before, as typing does. Call before `content` changes.
     mutating func replaceCharacters(in range: NSRange, withLength length: Int) {
@@ -134,6 +171,12 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
             let inherited = start > 0 ? fonts[start - 1] : (end > start ? fonts[start] : fonts.first ?? fontName)
             fonts.replaceSubrange(start..<end, with: repeatElement(inherited, count: max(0, length)))
             setUnitFonts(fonts)
+        }
+        if scriptRuns != nil {
+            var scripts = unitScripts
+            let inherited = start > 0 ? scripts[start - 1] : (end > start ? scripts[start] : scripts.first ?? .none)
+            scripts.replaceSubrange(start..<end, with: repeatElement(inherited, count: max(0, length)))
+            setUnitScripts(scripts)
         }
     }
 
@@ -185,6 +228,26 @@ nonisolated struct LayerTextStyle: Codable, Equatable, Sendable {
         }
         fontRuns = runs.isEmpty ? nil : runs
     }
+
+    private var unitScripts: [TextScript] {
+        var scripts = Array(repeating: TextScript.none, count: content.utf16.count)
+        for run in scriptRuns ?? [] {
+            for index in max(0, run.location)..<min(scripts.count, run.location + run.length) { scripts[index] = run.script }
+        }
+        return scripts
+    }
+
+    private mutating func setUnitScripts(_ scripts: [TextScript]) {
+        var runs: [LayerTextScriptRun] = []
+        for (index, script) in scripts.enumerated() where script != .none {
+            if let last = runs.last, last.location + last.length == index, last.script == script {
+                runs[runs.count - 1].length += 1
+            } else {
+                runs.append(LayerTextScriptRun(location: index, length: 1, script: script))
+            }
+        }
+        scriptRuns = runs.isEmpty ? nil : runs
+    }
 }
 
 nonisolated struct LayerTextColorRun: Codable, Equatable, Sendable {
@@ -199,6 +262,12 @@ nonisolated struct LayerTextFontRun: Codable, Equatable, Sendable {
     var location: Int
     var length: Int
     var fontName: String
+}
+
+nonisolated struct LayerTextScriptRun: Codable, Equatable, Sendable {
+    var location: Int
+    var length: Int
+    var script: TextScript
 }
 
 /// The cached raster participates in the existing compositor. Pixel edits rasterize the layer;
@@ -438,6 +507,17 @@ extension EditorSession {
         for run in style.colorRuns ?? [] where Self.containsTextRun(run.location, run.length, in: string.length) {
             string.addAttribute(.foregroundColor, value: NSColor(srgbRed: run.red, green: run.green, blue: run.blue, alpha: 1),
                                 range: NSRange(location: run.location, length: run.length))
+        }
+        // Superscript and subscript shrink the letters and shift them off the baseline, the way Photoshop's
+        // Text Options do. The scale and offset are fractions of the line's own size, so they track the font size.
+        for run in style.scriptRuns ?? [] where Self.containsTextRun(run.location, run.length, in: string.length) {
+            let range = NSRange(location: run.location, length: run.length)
+            let base = (string.attribute(.font, at: run.location, effectiveRange: nil) as? NSFont)
+                ?? NSFont(name: style.fontName, size: style.fontSize) ?? NSFont.systemFont(ofSize: style.fontSize)
+            let scaled = NSFont(name: base.fontName, size: max(1, base.pointSize * 0.583)) ?? base
+            string.addAttribute(.font, value: scaled, range: range)
+            let offset: CGFloat = run.script == .superscript ? style.fontSize * 0.42 : -style.fontSize * 0.12
+            string.addAttribute(.baselineOffset, value: offset, range: range)
         }
         return string
     }

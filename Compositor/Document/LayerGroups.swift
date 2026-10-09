@@ -242,8 +242,14 @@ extension EditorSession {
         LayerHierarchy.entries(document?.layers.map(\.hierarchyRecord) ?? [], topFirst: true, collapsed: collapsedGroupIDs)
     }
     func descendantIDs(of id: UUID) -> Set<UUID> {
+        layerSubtrees([id])
+    }
+
+    /// The ids of what sits inside any of these layers: a folder's own contents, and every layer on an
+    /// artboard. Choosing one of them takes the whole of it — a board is copied with what is on it.
+    func layerSubtrees(_ roots: some Sequence<UUID>) -> Set<UUID> {
         let children = Dictionary(grouping: document?.layers ?? [], by: \.parentID)
-        var result = Set<UUID>(), pending = [id]
+        var result = Set<UUID>(), pending = Array(roots)
         while let parent = pending.popLast() {
             for child in children[parent] ?? [] where result.insert(child.id).inserted { pending.append(child.id) }
         }
@@ -276,10 +282,15 @@ extension EditorSession {
         }
     }
     func canPlaceLayer(_ id: UUID, in parent: UUID?) -> Bool {
-        guard canEditLayers, document?.layers.contains(where: { $0.id == id }) == true else { return false }
+        guard canEditLayers, let layers = document?.layers, layers.contains(where: { $0.id == id }) else { return false }
+        let byID = Dictionary(uniqueKeysWithValues: layers.map { ($0.id, $0) })
+        // An artboard is a canvas region, not a folder to file away: it stays at the top level, and the
+        // layers it holds live in its group rather than being dropped beside it.
+        if byID[id]?.artboardID != nil { return parent == nil }
+        if let parent, byID[parent]?.artboardID != nil { return false }
         guard let parent else { return true }
         return parent != id && !descendantIDs(of: id).contains(parent)
-            && document?.layers.first(where: { $0.id == parent })?.isGroup == true
+            && byID[parent]?.isGroup == true
     }
     @discardableResult
     func placeLayer(_ id: UUID, in parent: UUID?, above target: UUID? = nil, atBottom: Bool = false) -> Bool {
@@ -290,7 +301,19 @@ extension EditorSession {
         var insertion = atBottom ? 0 : layers.count
         if let target {
             guard let targetIndex = layers.firstIndex(where: { $0.id == target && $0.parentID == parent }) else { return false }
-            insertion = targetIndex + 1
+            // A layer lands above the target; a group lands above the whole of it. Placing the group in
+            // the target's first slot would slip it between the target and the layers inside it, which no
+            // longer reads as being above it at all.
+            if layers[targetIndex].isGroup {
+                let children = Dictionary(grouping: layers, by: \.parentID)
+                var inside = Set<UUID>(), pending = [target]
+                while let current = pending.popLast() {
+                    for child in children[current] ?? [] where inside.insert(child.id).inserted { pending.append(child.id) }
+                }
+                insertion = (layers.lastIndex { inside.contains($0.id) } ?? targetIndex) + 1
+            } else {
+                insertion = targetIndex + 1
+            }
         }
         layers.insert(layer, at: insertion)
         Self.adoptClipping(id, in: &layers)

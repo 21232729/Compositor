@@ -13,30 +13,54 @@ struct TypeControls: View {
             session.changeTextStyle { $0[keyPath: key] = CGFloat(value) }
         })
     }
+
+    /// The face the header shows for the current selection: the caret's face with nothing highlighted, the one face
+    /// covering the highlight, or "" when the selection spans faces (so the pickers read "(Multiple)").
+    private var currentFace: String {
+        guard let draft = session.textDraft else { return session.currentTextStyle.fontName }
+        let selection = draft.selection
+        if selection.length == 0 { return draft.style.fontName(at: max(0, selection.location - 1)) }
+        return draft.style.uniformFontName(in: selection) ?? ""
+    }
+    /// Applying a chosen face to the current selection, the same path the old single picker used.
+    private func applyFace(_ name: String) {
+        let selection = session.textDraft?.selection ?? NSRange()
+        session.changeTextStyle { $0.setFont(name, in: selection) }
+    }
+    private func previewFace(_ step: FontChoicePopup.PreviewStep) {
+        switch step {
+        case .show(let name): session.previewFont(name)
+        case .revert: session.endFontPreview()
+        case .keep: session.keepFontPreview()
+        }
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             Text("Type").font(ToolHeaderStyle.titleFont)
             ScrollView(.horizontal) {
                 HStack(spacing: 10) {
-                    TypeFontPicker(fontName: Binding(get: {
-                        guard let draft = session.textDraft else { return session.currentTextStyle.fontName }
-                        let selection = draft.selection
-                        if selection.length == 0 {
-                            return draft.style.fontName(at: max(0, selection.location - 1))
-                        }
-                        // No single face: an empty title, so choosing the first letter's face still applies to the rest.
-                        return draft.style.uniformFontName(in: selection) ?? ""
-                    }, set: { name in
-                        let selection = session.textDraft?.selection ?? NSRange()
-                        session.changeTextStyle { $0.setFont(name, in: selection) }
-                    }), preview: { step in
-                        switch step {
-                        case .show(let name): session.previewFont(name)
-                        case .revert: session.endFontPreview()
-                        case .keep: session.keepFontPreview()
-                        }
-                    })
-                        .frame(width: 210).help("Font face, including bold and italic variants")
+                    // Family and style, the way Photoshop splits the two: the style popup lists the weights and
+                    // slants within whatever family is chosen.
+                    FontChoicePopup(
+                        items: FontCatalog.allFamilies.map { family in
+                            let style = FontCatalog.style(of: currentFace)
+                            let face = FontCatalog.face(inFamily: family, matchingStyle: style)
+                            return (label: family, value: face?.postScriptName ?? "")
+                        },
+                        selection: FontCatalog.family(of: currentFace) ?? "",
+                        placeholder: "(Family)", accessibility: "Font family",
+                        choose: { face in applyFace(face) }, preview: previewFace
+                    )
+                        .frame(width: 170).help("Font family")
+                    FontChoicePopup(
+                        items: FontCatalog.faces(ofFamily: FontCatalog.family(of: currentFace) ?? "")
+                            .map { (label: $0.style, value: $0.postScriptName) },
+                        selection: currentFace,
+                        placeholder: "(Style)", accessibility: "Font style",
+                        choose: { face in applyFace(face) }, preview: previewFace
+                    )
+                        .frame(width: 130).help("Font style, weight and slant within the family")
                     TextField("Size", value: number(\.fontSize), format: .number).frame(width: 52)
                         .unitSuffix("px", scrubValue: value(\.fontSize), sensitivity: 1, range: 1...2000, step: 1)
                         .arrowSteps(value: { Double(session.currentTextStyle.fontSize) },
@@ -68,6 +92,11 @@ struct TypeControls: View {
                             .accessibilityAddTraits(selected ? .isSelected : [])
                         }
                     }
+                    // Superscript / subscript: raise or lower the highlighted letters, as Photoshop's Text Options.
+                    HStack(spacing: 2) {
+                        scriptButton(.superscript, symbol: "textformat.superscript", title: "Superscript")
+                        scriptButton(.subscript, symbol: "textformat.subscript", title: "Subscript")
+                    }
                     Text("Tracking").scrubbable(sensitivity: 1, value: value(\.tracking), range: -100...1000, step: 1)
                     TextField("Tracking", value: number(\.tracking), format: .number).frame(width: 45)
                         .arrowSteps(value: { Double(session.currentTextStyle.tracking) },
@@ -89,7 +118,8 @@ struct TypeControls: View {
             }.scrollIndicators(.hidden)
             if session.textDraft != nil {
                 Button("Cancel") { session.cancelText() }
-                Button("Done") { _ = session.finishText() }
+                // Committing text hands the tool to Move, so the new layer can be dragged or another picked at once.
+                Button("Done") { if session.finishText() { session.selectTool(.move) } }
             } else {
                 Button("Edit Text") { session.editActiveText() }.disabled(session.activeLayer?.liveText == nil)
             }
@@ -98,70 +128,70 @@ struct TypeControls: View {
         .disabled(session.document == nil || session.showsBusy)
         .onChange(of: session.colorPicker?.color) { _, _ in session.previewTextColor() }
     }
+
+    /// A superscript/subscript toggle: pressing it again with the same script already on the selection clears it.
+    private func scriptButton(_ script: TextScript, symbol: String, title: String) -> some View {
+        let on = selectionScript == script
+        return Button {
+            let selection = session.textDraft?.selection ?? NSRange(location: 0, length: session.currentTextStyle.content.utf16.count)
+            session.changeTextStyle { $0.setScript(on ? .none : script, in: selection) }
+        } label: {
+            Image(systemName: symbol)
+                .frame(width: 30, height: 26)
+                .background(on ? Color.white.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 4))
+                .contentShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(.plain)
+        .help(title)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(on ? .isSelected : [])
+    }
+
+    /// The script of the current selection, for lighting its button: the caret's own script with nothing highlighted.
+    private var selectionScript: TextScript {
+        guard let draft = session.textDraft else { return .none }
+        let selection = draft.selection
+        let index = selection.length == 0 ? max(0, selection.location - 1) : selection.location
+        return draft.style.script(at: index)
+    }
 }
 
-/// Keep the installed-font catalog out of SwiftUI's per-keystroke view updates.
-/// The closed control needs only the current name; populate its menu on demand.
-private struct TypeFontPicker: NSViewRepresentable {
-    @Binding var fontName: String
-    /// The open menu trying faces on the text: the one under the pointer, putting the text back, or keeping it.
+/// A face/family/style popup that previews faces on the text as the pointer moves over the list, the way the
+/// single font picker did. `items` carry a display label and the PostScript face to apply (and preview) for it.
+struct FontChoicePopup: NSViewRepresentable {
     enum PreviewStep { case show(String), revert, keep }
-    var preview: (PreviewStep) -> Void = { _ in }
-    @Environment(\.isEnabled) private var isEnabled
+    let items: [(label: String, value: String)]
+    let selection: String
+    let placeholder: String
+    let accessibility: String
+    let choose: (String) -> Void
+    let preview: (PreviewStep) -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(fontName: $fontName, preview: preview) }
+    func makeCoordinator() -> Coordinator { Coordinator(choose: choose, preview: preview) }
 
     func makeNSView(context: Context) -> NSPopUpButton {
         let button = FixedWidthPopUpButton(frame: .zero, pullsDown: false)
-        if !fontName.isEmpty { button.addItem(withTitle: fontName) }
         button.borderShape = .capsule
-        // A long font name is cut off at its end rather than widening the control or scrolling its start away.
         button.cell?.lineBreakMode = .byTruncatingTail
         button.cell?.usesSingleLineMode = true
         button.cell?.alignment = .left
-        button.setAccessibilityLabel("Font")
+        button.setAccessibilityLabel(accessibility)
         button.target = context.coordinator
         button.action = #selector(Coordinator.choose(_:))
         button.menu?.delegate = context.coordinator
-        Coordinator.prepareStyledNames()
         context.coordinator.button = button
         return button
     }
 
     func updateNSView(_ button: NSPopUpButton, context: Context) {
-        context.coordinator.fontName = $fontName
+        context.coordinator.choose = choose
         context.coordinator.preview = preview
-        button.isEnabled = isEnabled
         guard !context.coordinator.tracking else { return }
-        if fontName.isEmpty { Self.showMultiple(in: button); return }
-        Self.hideMultiple(in: button)
-        guard button.titleOfSelectedItem != fontName else { return }
-        if button.item(withTitle: fontName) == nil { button.addItem(withTitle: fontName) }
-        button.selectItem(withTitle: fontName)
+        context.coordinator.reload(into: button, items: items, selection: selection, placeholder: placeholder)
     }
 
-    /// Selected letters in more than one face: the menu says so with an item of its own at the top, which isn't a font.
-    private static let multiple = "(Multiple)"
-    private static func isMultiple(_ item: NSMenuItem?) -> Bool { item?.representedObject as? String == multiple }
-    static func showMultiple(in button: NSPopUpButton) {
-        if !isMultiple(button.item(at: 0)) {
-            let item = NSMenuItem(title: multiple, action: nil, keyEquivalent: "")
-            item.representedObject = multiple
-            button.menu?.insertItem(item, at: 0)
-        }
-        if button.indexOfSelectedItem != 0 { button.selectItem(at: 0) }
-    }
-    static func hideMultiple(in button: NSPopUpButton) {
-        if isMultiple(button.item(at: 0)) { button.removeItem(at: 0) }
-    }
-
-    static func dismantleNSView(_ button: NSPopUpButton, coordinator: Coordinator) {
-        button.menu?.delegate = nil
-        button.target = nil
-    }
-
-    /// The font list holds names of every length; the control keeps whatever width it is given, so choosing a long
-    /// name can't stretch it — or leave it stretched once a short one is chosen again.
+    /// The list holds names of every length; the control keeps whatever width it is given, so choosing a long one
+    /// can't stretch it — or leave it stretched once a short one is chosen again.
     final class FixedWidthPopUpButton: NSPopUpButton {
         override var intrinsicContentSize: NSSize {
             NSSize(width: NSView.noIntrinsicMetric, height: super.intrinsicContentSize.height)
@@ -169,81 +199,73 @@ private struct TypeFontPicker: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, NSMenuDelegate {
-        var fontName: Binding<String>
+        var choose: (String) -> Void
         var preview: (PreviewStep) -> Void
         weak var button: NSPopUpButton?
         var tracking = false
-        private var loaded = false
-        /// A face was chosen in the menu just closing, so its preview stays rather than being put back.
         private var chose = false
+        /// Menu item tag -> the PostScript face it applies and previews.
+        private var faceByTag: [Int: String] = [:]
+        /// The last list built, so a redraw with the same fonts doesn't rebuild every attributed title.
+        private var lastSignature = ""
 
-        init(fontName: Binding<String>, preview: @escaping (PreviewStep) -> Void) { self.fontName = fontName; self.preview = preview }
-
-        /// Each face's name set in that face, made once for the app. Building them all takes about half a second, so
-        /// `prepareStyledNames` does it in the background when the Type bar first appears, ahead of the menu opening.
-        /// Faces that can't draw their own name (symbol fonts) keep the menu's font, so the name stays readable; they're
-        /// stored as an empty string.
-        @MainActor private static var styledNames: [String: NSAttributedString] = [:]
-        @MainActor private static var preparing = false
-        @MainActor static func styledName(_ name: String) -> NSAttributedString? {
-            if styledNames[name] == nil { styledNames[name] = makeStyledName(name) }
-            let styled = styledNames[name]!
-            return styled.length == 0 ? nil : styled
-        }
-        @MainActor static func prepareStyledNames() {
-            guard !preparing, styledNames.isEmpty else { return }
-            preparing = true
-            let names = NSFontManager.shared.availableFonts
-            Task.detached(priority: .utility) {
-                let made = Made(names: Dictionary(uniqueKeysWithValues: names.map { ($0, makeStyledName($0)) }))
-                await MainActor.run { styledNames.merge(made.names) { current, _ in current } }
-            }
-        }
-        /// Finished strings, never changed after they're made, handed over to the main thread.
-        private struct Made: @unchecked Sendable { let names: [String: NSAttributedString] }
-        nonisolated private static func makeStyledName(_ name: String) -> NSAttributedString {
-            guard let font = NSFont(name: name, size: NSFont.systemFontSize),
-                  name.unicodeScalars.filter({ $0.properties.isAlphabetic }).allSatisfy({ font.coveredCharacterSet.contains($0) })
-            else { return NSAttributedString() }
-            return NSAttributedString(string: name, attributes: [.font: font])
+        init(choose: @escaping (String) -> Void, preview: @escaping (PreviewStep) -> Void) {
+            self.choose = choose; self.preview = preview
         }
 
-        func menuNeedsUpdate(_ menu: NSMenu) {
-            guard !loaded, let button else { return }
-            let selected = fontName.wrappedValue
-            var names = NSFontManager.shared.availableFonts
-            if !selected.isEmpty, !names.contains(selected) { names.append(selected) }
-            names.sort()
+        func reload(into button: NSPopUpButton, items: [(label: String, value: String)], selection: String, placeholder: String) {
+            let signature = selection + "|" + items.map { "\($0.label):\($0.value)" }.joined(separator: ",")
+            guard signature != lastSignature else { return }
+            lastSignature = signature
             button.removeAllItems()
-            button.addItems(withTitles: names)
-            for item in button.itemArray { item.attributedTitle = Self.styledName(item.title) }
-            if selected.isEmpty { TypeFontPicker.showMultiple(in: button) } else { button.selectItem(withTitle: selected) }
-            loaded = true
+            faceByTag.removeAll()
+            var tag = 0
+            var selectedIndex: Int?
+            for item in items where !item.value.isEmpty {
+                let menuItem = NSMenuItem(title: item.label, action: nil, keyEquivalent: "")
+                menuItem.tag = tag
+                menuItem.attributedTitle = Self.styled(item.label, face: item.value)
+                button.menu?.addItem(menuItem)
+                if item.value == selection { selectedIndex = button.numberOfItems - 1 }
+                if item.label == selection { selectedIndex = button.numberOfItems - 1 }
+                faceByTag[tag] = item.value
+                tag += 1
+            }
+            if button.numberOfItems == 0 {
+                let empty = NSMenuItem(title: placeholder, action: nil, keyEquivalent: "")
+                empty.isEnabled = false
+                button.menu?.addItem(empty)
+            }
+            if let selectedIndex { button.selectItem(at: selectedIndex) }
+        }
+
+        /// The label drawn in its own face, when that face can render it; otherwise the menu's plain font.
+        @MainActor private static func styled(_ label: String, face: String) -> NSAttributedString {
+            guard let font = NSFont(name: face, size: NSFont.systemFontSize),
+                  label.unicodeScalars.filter({ $0.properties.isAlphabetic }).allSatisfy({ font.coveredCharacterSet.contains($0) })
+            else { return NSAttributedString(string: label) }
+            return NSAttributedString(string: label, attributes: [.font: font])
         }
 
         func menuWillOpen(_ menu: NSMenu) { tracking = true }
         func menuDidClose(_ menu: NSMenu) {
             tracking = false
-            // A choice may be reported just after the menu closes: put the text back only if none came.
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 if !self.chose { self.preview(.revert) }
                 self.chose = false
             }
         }
-        /// Only a face previews. Nothing highlighted (the pointer off the list, or the menu closing on a click) leaves the
-        /// last face showing: reverting there flashed the old face just before the chosen one landed.
         func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {
-            if let item, !TypeFontPicker.isMultiple(item) { preview(.show(item.title)) }
+            if let item, let face = faceByTag[item.tag] { preview(.show(face)) }
         }
 
         @objc func choose(_ button: NSPopUpButton) {
-            // The text already shows the face under the pointer: keep it as it is, so it doesn't flash back.
             chose = true
-            preview(.keep)
-            guard !TypeFontPicker.isMultiple(button.selectedItem),
-                  let selected = button.titleOfSelectedItem, selected != fontName.wrappedValue else { return }
-            fontName.wrappedValue = selected
+            if let face = button.selectedItem.flatMap({ faceByTag[$0.tag] }) {
+                preview(.keep)
+                choose(face)
+            }
         }
     }
 }
