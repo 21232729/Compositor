@@ -10,6 +10,16 @@ Because it’s open source, you can download the Xcode project and add, remove, 
 
 ## Installation
 
+### My builds
+
+The changes I make here ship on this repository's [Releases page](https://github.com/21232729/Compositor/releases/latest): download `Compositor-Preview-Artboards.dmg` (or the `.zip`) and drag the app into Applications. Each release's notes list what that build adds over upstream.
+
+These need Apple silicon and macOS 26 or later, and are ad-hoc signed rather than notarized, so the first launch needs a right-click → **Open** — or in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Compositor.app
+```
+
 ### Download
 Get Compositor from [robbietilton.com/compositor](https://robbietilton.com/compositor), or download the latest release directly from [GitHub Releases](https://github.com/robbietilton/Compositor/releases/latest).
 
