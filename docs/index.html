@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compositor 我的构建版本 · My Builds</title>
+<meta name="description" content="Compositor 的个人工作副本下载：美术板、钢笔工具、Photoshop 风格文字排版。A personal working copy of Compositor with artboards, a pen tool and Photoshop-style typography.">
+<style>
+  :root {
+    --bg: #1c1c1e;
+    --panel: #26262a;
+    --line: #3a3a40;
+    --text: #f2f2f4;
+    --muted: #a1a1aa;
+    --accent: #31d0c5;
+    --accent-ink: #06231f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 72px 24px 96px; }
+  .eyebrow { color: var(--accent); font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+  h1 { font-size: 40px; line-height: 1.2; margin: 10px 0 6px; letter-spacing: -.02em; }
+  .lede { color: var(--muted); font-size: 18px; margin: 0 0 34px; }
+  .lede strong { color: var(--text); font-weight: 600; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 0 0 14px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 9px;
+    padding: 14px 22px; border-radius: 11px;
+    font-size: 16px; font-weight: 600; text-decoration: none;
+    background: var(--accent); color: var(--accent-ink);
+    border: 1px solid var(--accent);
+  }
+  .btn.alt { background: transparent; color: var(--text); border-color: var(--line); font-weight: 500; }
+  .btn.alt:hover { border-color: var(--muted); }
+  .btn small { font-weight: 500; opacity: .72; }
+  .specs { color: var(--muted); font-size: 14px; margin: 0 0 40px; }
+  .specs code { color: var(--text); }
+  h2 { font-size: 15px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 44px 0 14px; }
+  ul { margin: 0; padding: 0; list-style: none; }
+  li { padding: 9px 0 9px 22px; position: relative; border-bottom: 1px solid var(--line); }
+  li:last-child { border-bottom: 0; }
+  li::before { content: ""; position: absolute; left: 2px; top: 18px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); opacity: .8; }
+  li span { display: block; color: var(--muted); font-size: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 13px; padding: 20px 22px; }
+  .card p:first-child { margin-top: 0; }
+  .card p:last-child { margin-bottom: 0; }
+  pre { margin: 12px 0 0; padding: 12px 14px; background: #141416; border: 1px solid var(--line); border-radius: 9px; overflow-x: auto; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 13.5px; }
+  .credit { color: var(--muted); font-size: 15px; }
+  .credit a { color: var(--text); }
+  footer { margin-top: 56px; padding-top: 22px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  a { color: var(--accent); }
+  @media (max-width: 560px) { h1 { font-size: 31px; } .wrap { padding-top: 44px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="eyebrow">预览版 Preview build</p>
+  <h1>Compositor <span style="color:var(--muted);font-weight:500">我的构建版本</span></h1>
+  <p class="lede">一份 <strong>Compositor</strong> 的个人工作副本，加上了美术板、钢笔工具和 Photoshop 风格的文字排版。<br>
+    <span style="font-size:15px">My working copy of Compositor: artboards, a pen tool, and Photoshop-style typography.</span></p>
+
+  <div class="cta">
+    <a class="btn" href="https://github.com/21232729/Compositor/releases/download/artboards-typography-preview/Compositor-Preview-Artboards.dmg">下载 Compositor.dmg <small>8.3 MB</small></a>
+    <a class="btn alt" href="https://github.com/21232729/Compositor/releases/download/artboards-typography-preview/Compositor-Preview-Artboards.zip">zip 版本 <small>7.5 MB</small></a>
+    <a class="btn alt" href="https://github.com/21232729/Compositor/releases/latest">更新说明 Release notes</a>
+  </div>
+
+  <p class="specs">需要 Apple silicon 与 macOS 26 或更新 · Requires Apple silicon and macOS 26 or later · 标签 <code>artboards-typography-preview</code></p>
+
+  <div class="card">
+    <p style="margin:0"><strong>首次打开会被 macOS 拦一下</strong> —— 这个包只做本地 ad-hoc 签名，没有走 Apple 公证。<br>
+      <span style="color:var(--muted)">The first launch is blocked by Gatekeeper: this build is ad-hoc signed, not notarized.</span></p>
+    <p style="margin:14px 0 0">把 Compositor 拖进「应用程序」后，任选一种放行方式：<br>
+      <span style="color:var(--muted)">After dragging Compositor into Applications, use either of these:</span></p>
+    <ul style="margin-top:10px">
+      <li>在「应用程序」里 <strong>右键 Compositor → 打开 → 打开</strong><span>Right-click the app → Open → Open</span></li>
+      <li>或在终端执行 <span>or run this in Terminal</span>
+        <pre><code>xattr -dr com.apple.quarantine /Applications/Compositor.app</code></pre>
+      </li>
+    </ul>
+  </div>
+
+  <h2>这一版有什么 · What's new</h2>
+  <ul>
+    <li>一个文档多个美术板，各自独立创建、移动、缩放，可单独导出 PNG<span>Multiple artboards per document, each movable, resizable and exportable on its own</span></li>
+    <li>右键画板上的尺寸标签，直接输入精确宽高<span>Right-click an artboard's size label to type an exact width and height</span></li>
+    <li>工具按组收纳，右键组内按钮切换；折叠组带角标提示<span>A grouped toolbar with right-click switching and a badge on collapsed groups</span></li>
+    <li>新增钢笔工具绘制路径，与画笔同组<span>A pen tool for paths, grouped with the brush</span></li>
+    <li>字体拆成「字体族 + 样式」两个选择器，悬停即可预览<span>Font family and style pickers, with hover preview</span></li>
+    <li>选中文字范围可单独设颜色、字体、上标/下标<span>Per-range color, font and superscript / subscript</span></li>
+    <li>提交文字后自动切到移动工具，可立刻拖动<span>Committing text hands the tool to Move, so you can drag it right away</span></li>
+    <li>点击图层选图层、点击画板选画板；点击画板之外取消选择<span>Precise auto-select: a layer picks the layer, a board's empty area picks the board, a click outside deselects</span></li>
+    <li>图层面板缩略图按整个工作区取景，不再出现空白棋盘格<span>Layer thumbnails frame the whole working area, so nothing shows as an empty checkerboard</span></li>
+  </ul>
+
+  <h2>出处 · Credit</h2>
+  <p class="credit">Compositor 由 <a href="https://github.com/robbietilton">Robbie Tilton</a>（Wonder Assembly LLC）开发并以 MIT 协议开源，本页面只是他项目的一份个人修改版。<br>
+    <span style="font-size:14px">Compositor itself is built and MIT-licensed by Robbie Tilton (Wonder Assembly LLC) — this is a personal modified copy.</span></p>
+  <p class="credit" style="margin-top:12px">
+    原始项目 Original project → <a href="https://github.com/robbietilton/Compositor">github.com/robbietilton/Compositor</a> ·
+    <a href="https://robbietilton.com/compositor">robbietilton.com/compositor</a><br>
+    本副本源码 Source of this copy → <a href="https://github.com/21232729/Compositor">github.com/21232729/Compositor</a> · MIT, 原样保留 <code>LICENSE</code>
+  </p>
+
+  <footer>
+    想要签名并公证过的正式版本，请去原始仓库下载：Signed and notarized official builds come from the original repository →
+    <a href="https://github.com/robbietilton/Compositor/releases">robbietilton/Compositor/releases</a>
+  </footer>
+
+</div>
+</body>
+</html>
