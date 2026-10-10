@@ -389,6 +389,52 @@ struct SelectionTests {
         #expect(try coverage(session, 30, 30) == 255) // a box grown from its center would have reached here
     }
 
+    /// A box drawn inside the current selection replaces it, exactly as drawn. Anywhere inside used to grab
+    /// the old outline and move it instead, so what got selected had nothing to do with the box. Grabbing the
+    /// marching ants themselves — within a few points of them — still moves the outline.
+    @Test func marqueeDrawsInsideASelectionAndMovesItOnlyFromTheEdge() throws {
+        let session = makeSession()
+        session.selectTool(.marquee)
+        let size = CGSize(width: 100, height: 100)
+        session.applySelection(CGPath(rect: CGRect(x: 10, y: 10, width: 40, height: 40), transform: nil),
+                               mode: .replace, name: "First")
+        let view = CanvasView(session: session)
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 200, height: 200), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = view
+        session.viewport.resize(to: view.bounds.size, backingScale: 1, documentSize: size)
+        func send(_ type: NSEvent.EventType, _ x: CGFloat, _ y: CGFloat) throws {
+            let spot = session.viewport.viewPoint(from: CGPoint(x: x, y: y), documentSize: size)
+            let event = try #require(NSEvent.mouseEvent(with: type, location: NSPoint(x: spot.x, y: view.bounds.height - spot.y),
+                modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: 1))
+            switch type {
+            case .leftMouseDown: view.mouseDown(with: event)
+            case .leftMouseDragged: view.mouseDragged(with: event)
+            default: view.mouseUp(with: event)
+            }
+        }
+        func box() -> CGRect? { session.selection?.path.boundingBoxOfPath }
+
+        // Pressed deep inside the old selection: the drawn box is what gets selected.
+        try send(.leftMouseDown, 20, 20)
+        try send(.leftMouseDragged, 25, 32)
+        try send(.leftMouseDragged, 30, 45)
+        try send(.leftMouseUp, 30, 45)
+        let drawn = try #require(box())
+        #expect(abs(drawn.minX - 20) <= 1 && abs(drawn.minY - 20) <= 1
+                && abs(drawn.width - 10) <= 1 && abs(drawn.height - 25) <= 1, "drew 20,20→30,45 and got \(drawn)")
+
+        // Pressed on the ants of that box: the same drag moves the outline, size and all.
+        try send(.leftMouseDown, drawn.maxX, drawn.midY)
+        try send(.leftMouseDragged, drawn.maxX + 5, drawn.midY + 3)
+        try send(.leftMouseDragged, drawn.maxX + 10, drawn.midY + 6)
+        try send(.leftMouseUp, drawn.maxX + 10, drawn.midY + 6)
+        let moved = try #require(box())
+        #expect(abs(moved.width - drawn.width) <= 1 && abs(moved.height - drawn.height) <= 1, "the edge grab resized: \(drawn) → \(moved)")
+        #expect(abs(moved.maxX - (drawn.maxX + 10)) <= 1 && abs(moved.maxY - (drawn.maxY + 6)) <= 1, "edge drag moved to \(moved) from \(drawn)")
+    }
+
     /// M chooses the Marquee in whichever shape it was last set to; the shape is switched in the tool bar only
     /// (`pressMarqueeKey`). M used to cycle Rectangle/Ellipse, and this test asserted that.
     ///

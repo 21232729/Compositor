@@ -301,6 +301,8 @@ final class EditorSession {
     var heldSelectionMode: SelectionMode?
     /// The selection as it was when a drag-move began; the drag is one undo step.
     @ObservationIgnored var selectionMoveOrigin: DocumentSelection?
+    /// The stroked edge of the selection currently on the canvas, for the pointer's "can I grab it" test.
+    @ObservationIgnored var outlineBandCache: (source: CGPath, tolerance: CGFloat, band: CGPath)?
     var pixelMove: PixelMove?
     @ObservationIgnored var pixelClipboard: PixelClipboard?
     @ObservationIgnored var copiedLayer: CopiedLayer?

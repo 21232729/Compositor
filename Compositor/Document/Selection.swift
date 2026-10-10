@@ -259,6 +259,26 @@ extension EditorSession {
         return selection.path.contains(point, using: .winding)
     }
 
+    /// True where a selection tool's press should grab the marching ants and move them: within `tolerance`
+    /// document pixels of the outline itself, not anywhere the selection covers. Photoshop moves a selection
+    /// by its edge; a box started inside one is still a box, so drawing there has to draw.
+    func canMoveSelectionOutline(at point: CGPoint, tolerance: CGFloat) -> Bool {
+        guard let selection, !selection.isEmpty, canEditSelection, lassoDraft == nil else { return false }
+        return outlineBand(of: selection, tolerance: tolerance).contains(point, using: .winding)
+    }
+
+    /// The selection's edge as a grabbable band, stroked `tolerance` either side. Kept for the path it was
+    /// made from, because the pointer asks for this on every move and a traced selection has a lot of edges.
+    private func outlineBand(of selection: DocumentSelection, tolerance: CGFloat) -> CGPath {
+        if let cache = outlineBandCache, cache.tolerance == tolerance, cache.source === selection.path {
+            return cache.band
+        }
+        let band = selection.path.copy(strokingWithWidth: tolerance * 2, lineCap: .round,
+                                       lineJoin: .round, miterLimit: 4)
+        outlineBandCache = (selection.path, tolerance, band)
+        return band
+    }
+
     /// Moves the outline only (never pixels). The whole drag is one undo step.
     func beginSelectionMove() -> Bool {
         guard selectionMoveOrigin == nil, let selection, !selection.isEmpty, canEditSelection else { return false }

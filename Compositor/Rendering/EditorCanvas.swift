@@ -841,10 +841,17 @@ final class CanvasView: NSView {
         let mode = session.lassoCursorMode(shift: flags.contains(.shift), option: flags.contains(.option))
         if selectionDragStart != nil { return Self.moveSelectionCursor }
         if pixelDragStart != nil { return pixelDragCursor(duplicate: session.pixelMove?.duplicate == true) }
-        if flags.contains(.command) || mode == .replace, let document = session.document,
+        if flags.contains(.command), let document = session.document,
            let point = location ?? window.map({ convert($0.mouseLocationOutsideOfEventStream, from: nil) }),
            session.canMoveSelection(at: session.viewport.documentPoint(from: point, documentSize: document.size)) {
-            return flags.contains(.command) ? pixelDragCursor(duplicate: flags.contains(.option)) : Self.moveSelectionCursor
+            return pixelDragCursor(duplicate: flags.contains(.option))
+        }
+        // The move cursor only where the press would actually grab the outline — anywhere else New mode draws.
+        if mode == .replace, let document = session.document,
+           let point = location ?? window.map({ convert($0.mouseLocationOutsideOfEventStream, from: nil) }),
+           session.canMoveSelectionOutline(at: session.viewport.documentPoint(from: point, documentSize: document.size),
+                                           tolerance: Self.outlineGrabDistance / max(session.viewport.pointsPerPixel, 0.0001)) {
+            return Self.moveSelectionCursor
         }
         if session.tool == .wand, session.wandMode == .wand { return Self.wandCursors[mode] ?? .crosshair }
         let icon: SelectionIcon = session.tool == .wand ? .objectSelection : session.tool == .marquee
@@ -965,6 +972,8 @@ final class CanvasView: NSView {
     /// document pixels, as Photoshop does; the pixel grid appears from 800%.
     static let crispZoom: CGFloat = 2
     static let pixelGridZoom: CGFloat = 8
+    /// How close, in screen points, a New-mode press has to come to the marching ants to grab and move them.
+    static let outlineGrabDistance: CGFloat = 8
 
     /// A copy of a layer image sized for how large it lands in `context` (`drawnWidth` in the context's units),
     /// from the shared cache of sharp halvings. Core Graphics resamples the whole source on every draw — a
@@ -2624,8 +2633,10 @@ final class CanvasView: NSView {
                 return
             }
             let mode = session.selectionMode(shift: event.modifierFlags.contains(.shift), option: event.modifierFlags.contains(.option))
-            // In New mode, dragging inside the selection moves its outline instead of drawing.
-            if mode == .replace, session.canMoveSelection(at: pixel), session.beginSelectionMove() {
+            // In New mode, pressing on the marching ants moves the selection outline. Only on them: a box
+            // drawn inside a selection is still that box, so the drag has to draw it rather than move the old one.
+            if mode == .replace, session.canMoveSelectionOutline(at: pixel, tolerance: Self.outlineGrabDistance / max(session.viewport.pointsPerPixel, 0.0001)),
+               session.beginSelectionMove() {
                 selectionDragStart = pixel
                 Self.moveSelectionCursor.set()
                 return
