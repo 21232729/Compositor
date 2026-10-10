@@ -1,5 +1,7 @@
 # Compositor
 
+This is my working copy of [robbietilton/Compositor](https://github.com/robbietilton/Compositor) (MIT, © Wonder Assembly LLC), where I build the features I want. My changes start at `Add artboards, a pen tool and Photoshop-style typography`.
+
 Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
 
 The goal was to create a full-featured image editor that is completely free and open source. I used to use Photoshop for compositing and post-processing, so Compositor is built around that workflow - with the tools needed to create a pixel-perfect final image.
