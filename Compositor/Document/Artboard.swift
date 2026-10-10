@@ -178,9 +178,12 @@ extension EditorSession {
     /// Nil parent means the top level of a document without artboards.
     func newLayerPlacement(boardSize: Bool) -> (parent: UUID?, board: Artboard?) {
         guard let document else { return (nil, nil) }
+        // A selected folder takes the new layer, wherever it sits: a folder nested in another one is still the
+        // folder being worked in, not a sibling of it. (This used to ask after the parent, which made a nested
+        // folder's new layer land beside the folder instead of inside it.)
+        if activeLayer?.isGroup == true, activeLayer?.artboardID == nil { return (activeLayerID, nil) }
         // Already inside a folder or a board: the new layer joins it, as it always has.
         if let layer = activeLayer, let parent = layer.parentID { return (parent, nil) }
-        if activeLayer?.isGroup == true, activeLayer?.artboardID == nil { return (activeLayerID, nil) }
         let board = document.activeArtboardID.flatMap { id in document.artboards.first { $0.id == id } }
         guard usesArtboards, let board, let group = artboardGroup(board.id) else { return (nil, nil) }
         return (group.id, boardSize ? board : nil)
