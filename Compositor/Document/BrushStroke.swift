@@ -397,7 +397,7 @@ final class BrushStroke {
             }
             work.append((gpuTiles[key]!, tile.rect, coverage[key]!))
         }
-        try gpu.render(work, settled: settled, tail: tail, mapping: pixelToDocument, settings: settings, canvas: canvas.size)
+        try gpu.render(work, settled: settled, tail: tail, mapping: pixelToDocument, settings: settings, canvas: canvas)
         gpuTailKeys = tailKeys
         try publish(changed)
     }

@@ -17,6 +17,7 @@ final class MetalBrushCoverage {
         var geometry: SIMD4<Float>
         var canvas: SIMD4<Float>
         var counts: SIMD4<UInt32>
+        var bounds: SIMD4<Float>
     }
     private init() throws {
         guard let device = MTLCreateSystemDefaultDevice(), let queue = device.makeCommandQueue(),
@@ -31,8 +32,10 @@ final class MetalBrushCoverage {
         memset(permanent.contents(), 0, width * height * MemoryLayout<Float>.stride)
         return Tile(permanent: permanent, preview: preview)
     }
+    /// `canvas` is the paintable area in document coordinates, which is the whole document except where an
+    /// artboard scopes the stroke, so its position matters as well as its size.
     func render(_ tiles: [(Tile, CGRect, CGContext)], settled: [SIMD4<Float>], tail: [SIMD4<Float>],
-                mapping: CGAffineTransform, settings: BrushSettings, canvas: CGSize) throws {
+                mapping: CGAffineTransform, settings: BrushSettings, canvas: CGRect) throws {
         guard !tiles.isEmpty else { return }
         // A dummy segment supplies a valid buffer for tail removal with no new geometry.
         let segments = settled + tail
@@ -48,7 +51,8 @@ final class MetalBrushCoverage {
                 mapping: SIMD4(Float(mapping.a), Float(mapping.b), Float(mapping.c), Float(mapping.d)),
                 geometry: SIMD4(Float(origin.x), Float(origin.y), Float(settings.diameter / 2), Float(settings.hardness)),
                 canvas: SIMD4(Float(canvas.width), Float(canvas.height), Float(max(0.001, min(hypot(mapping.a, mapping.b), hypot(mapping.c, mapping.d)))), Float(max(0.25, settings.diameter * BrushStroke.spacingFraction(settings.hardness)))),
-                counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(segments.count)))
+                counts: SIMD4(UInt32(rect.width), UInt32(rect.height), UInt32(settled.count), UInt32(segments.count)),
+                bounds: SIMD4(Float(canvas.minX), Float(canvas.minY), Float(canvas.width), Float(canvas.height)))
             encoder.setBuffer(tile.permanent, offset: 0, index: 0)
             encoder.setBuffer(tile.preview, offset: 0, index: 1)
             encoder.setBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 2)
@@ -76,6 +80,7 @@ struct BrushUniforms {
     float4 geometry; // document origin of tile, radius, hardness
     float4 canvas; // width, height, antialias width, deposition spacing
     uint4 counts; // tile width, height, committed segment count, total segment count
+    float4 bounds; // paintable rect in document coordinates: x, y, width, height
 };
 
 float segmentDistanceSquared(float2 p, float4 segment) {
@@ -141,7 +146,9 @@ kernel void continuousBrush(device float *permanent [[buffer(0)]],
     uint index = pixel.y * u.counts.x + pixel.x;
     float2 local = float2(pixel) + 0.5f;
     float2 p = u.geometry.xy + local.x * u.mapping.xy + local.y * u.mapping.zw;
-    if (any(p < 0.0f) || any(p >= u.canvas.xy)) { preview[index] = 0; return; }
+    // Paint only lands inside the paintable rect, which for a stroke on an artboard is the board, not the
+    // document from its top-left corner — so the test is against the rect, not against its size.
+    if (p.x < u.bounds.x || p.y < u.bounds.y || p.x >= u.bounds.x + u.bounds.z || p.y >= u.bounds.y + u.bounds.w) { preview[index] = 0; return; }
     if (u.geometry.w >= 1.0f) {
         // Hard tips already have a solid interior. Preserve pixel-edge antialiasing.
         float settled = INFINITY, tail = INFINITY;
