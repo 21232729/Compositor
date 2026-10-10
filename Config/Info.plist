@@ -40,12 +40,14 @@
 	</array>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
-	<key>SUFeedURL</key>
-	<string>https://raw.githubusercontent.com/robbietilton/Compositor/main/appcast.xml</string>
-	<key>SUPublicEDKey</key>
-	<string>KZvD724t8QpzTR4OGrHrsCWt538TJ/g/qrTZii+o214=</string>
+	<!-- This copy of Compositor carries changes upstream has not released, and it is only ad-hoc signed.
+	     Pointing at upstream's feed let Sparkle quietly replace it with the official build, so automatic checks
+	     are off here and `Check for Updates…` is gone from the menu: a build stays the build until it is
+	     rebuilt or reinstalled. -->
 	<key>SUEnableAutomaticChecks</key>
-	<true/>
+	<false/>
+	<key>SUAutomaticallyUpdate</key>
+	<false/>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>
