@@ -55,16 +55,7 @@ extension EditorSession {
     /// to, or the whole canvas when it is not scoped to one.
     func rasterCanvas(for layer: ImageLayer) -> CGRect {
         guard let document, usesArtboards else { return CGRect(origin: .zero, size: document?.size ?? .zero) }
-        var parent = layer.parentID
-        var steps = 0
-        while let id = parent, steps < 64 {
-            if let group = document.layers.first(where: { $0.id == id }), let boardID = group.artboardID,
-               let board = document.artboards.first(where: { $0.id == boardID }) {
-                return board.rect
-            }
-            parent = document.layers.first(where: { $0.id == id })?.parentID
-            steps += 1
-        }
+        if let board = artboard(owning: layer) { return board.rect }
         return CGRect(origin: .zero, size: document.size)
     }
     func beginBrush(at point: CGPoint) {

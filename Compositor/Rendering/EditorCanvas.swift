@@ -1032,7 +1032,26 @@ final class CanvasView: NSView {
             return
         }
         let byID = Dictionary(uniqueKeysWithValues: document.layers.map { ($0.id, $0) })
+        /// Where a board cuts the view: the rectangle its layers' pixels are shown inside, in `context`'s units.
+        func boardCut(_ board: Artboard, scale: CGFloat, center: (CGPoint) -> CGPoint) -> CGRect {
+            CGRect(origin: center(board.rect.origin),
+                   size: CGSize(width: board.rect.width * scale, height: board.rect.height * scale))
+        }
         func drawOwn(_ id: UUID, _ context: CGContext) {
+            guard let layer = byID[id] else { return }
+            // A board is the canvas its layers sit on: what a layer holds past the board's edge stays hidden there,
+            // the way Photoshop cuts a layer to its artboard. The pixels are still there — moving the layer brings
+            // them back — only the drawing is clipped.
+            guard let board = session.artboard(owning: layer) else {
+                drawLayer(id, context)
+                return
+            }
+            context.saveGState()
+            defer { context.restoreGState() }
+            context.clip(to: boardCut(board, scale: scale, center: center))
+            drawLayer(id, context)
+        }
+        func drawLayer(_ id: UUID, _ context: CGContext) {
             guard let layer = byID[id] else { return }
             // Text being edited draws as it will be committed, in its place among the layers.
             if layer.id == session.textDraft?.layerID {
@@ -1224,7 +1243,12 @@ final class CanvasView: NSView {
         }
         let area = context.boundingBoxOfClipPath
         live.adjustmentClip = { [weak self] id, ctx in
-            guard let self, let layer = byID[id], layer.mask?.isEnabled == true else { return }
+            guard let self, let layer = byID[id] else { return }
+            // An adjustment sitting in a board colors the board, not the pasteboard beside it.
+            if let board = self.session.artboard(owning: layer) {
+                ctx.clip(to: boardCut(board, scale: scale, center: center))
+            }
+            guard layer.mask?.isEnabled == true else { return }
             // Mid-stroke the mask exists only as the edit's tiles, so the adjustment is clipped by those, the same
             // way a folder's mask is — otherwise the stroke would only appear once it was committed.
             if let edit = self.liveMaskEdit(for: id),
@@ -3163,7 +3187,14 @@ extension CanvasView {
             return shaded.transformed(by: toGrid)
         }
         // One layer's pixels, placed, through its own mask and at its opacity — what `drawOwn` draws.
+        /// …cut to the board it sits on: a layer's pixels past its board's edge are kept but not shown, as in
+        /// Photoshop. `ownPixels` draws them; this is the canvas's window onto them.
         func own(_ layer: ImageLayer) -> CIImage? {
+            guard let image = ownPixels(layer) else { return nil }
+            guard let board = session.artboard(owning: layer) else { return image }
+            return image.cropped(to: board.rect.applying(placement.mapping))
+        }
+        func ownPixels(_ layer: ImageLayer) -> CIImage? {
             let opacity = layer.effectiveOpacity(in: byID)
             // Text being edited, as it will be committed.
             if layer.id == session.textDraft?.layerID {
@@ -3361,7 +3392,12 @@ extension CanvasView {
             if let adjustment = layer.adjustment {
                 guard layer.maskSourceID == nil else { continue }
                 guard let changed = adjusted(result, by: layer, adjustment: adjustment, folders: true) else { return nil }
-                result = changed
+                // An adjustment in a board colors the board; the pasteboard beside it keeps what was there.
+                if let board = session.artboard(owning: layer) {
+                    result = changed.cropped(to: board.rect.applying(placement.mapping)).composited(over: result)
+                } else {
+                    result = changed
+                }
                 continue
             }
             if let children = stacks[id] {

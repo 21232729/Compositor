@@ -155,6 +155,24 @@ extension EditorSession {
         document?.layers.first { $0.isGroup && $0.artboardID == artboardID }
     }
 
+    /// The board a layer's pixels belong to: the board whose group holds it, walked up through any folders in
+    /// between. Nothing, for a layer outside every board — and for a board's own group row, which stands for the
+    /// rectangle and has no pixels of its own.
+    func artboard(owning layer: ImageLayer) -> Artboard? {
+        guard let document, usesArtboards else { return nil }
+        if layer.isGroup, layer.artboardID != nil { return nil }
+        if let own = layer.artboardID { return document.artboards.first { $0.id == own } }
+        var parent = layer.parentID
+        var steps = 0
+        while let id = parent, steps < 64 {
+            guard let group = document.layers.first(where: { $0.id == id }) else { return nil }
+            if let boardID = group.artboardID { return document.artboards.first { $0.id == boardID } }
+            parent = group.parentID
+            steps += 1
+        }
+        return nil
+    }
+
     /// Where a layer made now belongs: inside the folder that is selected, or on the board being edited —
     /// the board's own group, and the board itself when the new layer should take its size and corner.
     /// Nil parent means the top level of a document without artboards.

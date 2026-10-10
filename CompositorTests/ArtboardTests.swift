@@ -273,4 +273,93 @@ struct ArtboardTests {
         guard maxX >= minX else { return nil }
         return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
     }
+
+    // MARK: - What a board shows of the layers on it
+
+    /// A solid red square, `side` on.
+    private func redSquare(_ side: Int) throws -> CGImage {
+        let context = try BrushRaster.context(width: side, height: side, mask: false)
+        let bytes = try #require(context.data).assumingMemoryBound(to: UInt8.self)
+        for row in 0..<side {
+            for column in 0..<side {
+                let index = row * context.bytesPerRow + column * 4
+                bytes[index] = 230; bytes[index + 1] = 30; bytes[index + 2] = 30; bytes[index + 3] = 255
+            }
+        }
+        return try #require(context.makeImage())
+    }
+
+    /// Two boards side by side with one red layer twice as wide as the first: laid at that board's top-left corner,
+    /// it reaches past its right and bottom edges, across the pasteboard and into the board beside it.
+    private func boardWithOversizedLayer() throws -> (session: EditorSession, canvas: CanvasView, board: CGRect, red: UUID) {
+        let session = EditorSession()
+        session.viewport.resize(to: CGSize(width: 600, height: 400), backingScale: 1, documentSize: nil)
+        session.createDocument(width: 600, height: 400)
+        session.addArtboard(origin: CGPoint(x: 20, y: 20), width: 120, height: 120)
+        let board = try #require(session.activeArtboard)
+        session.addArtboard(origin: CGPoint(x: 200, y: 20), width: 120, height: 120)
+        session.focusArtboard(board.id)
+        let red = try redSquare(200)
+        session.addPixelLayer(red, at: board.origin, name: "Red", editName: "Paste")
+        let laid = try #require(session.activeLayer)
+        session.selectLayer(nil)
+        session.zoom(to: 1)
+        let canvas = CanvasView(session: session)
+        canvas.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+        session.viewport.resize(to: canvas.bounds.size, backingScale: 1, documentSize: session.document?.size)
+        return (session, canvas, board.rect, laid.id)
+    }
+
+    /// What the Core Graphics canvas draws, as the image it laid down.
+    private func cpuFrame(_ canvas: CanvasView, width: Int, height: Int) throws -> CGImage {
+        let context = try BrushRaster.context(width: width, height: height, mask: false)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: true)
+        canvas.allowsGPU = false
+        canvas.draw(canvas.bounds)
+        NSGraphicsContext.restoreGraphicsState()
+        return try #require(context.makeImage())
+    }
+
+    /// What the GPU draws for the same document, as the image its frame rendered into.
+    private func gpuFrame(_ canvas: CanvasView, width: Int, height: Int) throws -> CGImage {
+        let renderer = try #require(GPUCanvasRenderer.shared)
+        let frame = try #require(canvas.gpuFrame(size: CGSize(width: width, height: height)))
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: width, height: height,
+                                                                  mipmapped: false)
+        descriptor.usage = [.shaderRead, .shaderWrite]
+        descriptor.storageMode = .shared
+        let texture = try #require(renderer.device.makeTexture(descriptor: descriptor))
+        let buffer = try #require(renderer.queue.makeCommandBuffer())
+        renderer.context.render(frame, to: texture, commandBuffer: buffer,
+                                bounds: CGRect(x: 0, y: 0, width: width, height: height), colorSpace: renderer.space)
+        buffer.commit()
+        buffer.waitUntilCompleted()
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        texture.getBytes(&bytes, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
+        let data = Data(bytes)
+        let provider = try #require(CGDataProvider(data: data as CFData))
+        return try #require(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+            bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+    }
+
+    /// A layer larger than its board is cut at the board's edge on the canvas: the pasteboard between two boards and
+    /// the board beside it show none of it, on either canvas. Only the drawing is clipped — the pixels stay in the
+    /// document, so moving the layer brings the rest of it back.
+    @Test func aLayerPastItsBoardIsCutAtTheEdge() throws {
+        let (session, canvas, board, redID) = try boardWithOversizedLayer()
+        let red = try #require(session.document?.layers.first { $0.id == redID })
+        #expect(red.asset?.image.width == 200, "the layer landed on the board with \(String(describing: red.asset?.image.width)) pixels")
+        #expect(session.artboard(owning: red) != nil, "the layer is not scoped to a board")
+        // The canvases read their rows bottom up, so the board's own rect comes out mirrored.
+        let cut = CGRect(x: board.minX, y: 400 - board.maxY, width: board.width, height: board.height)
+        let drawn = try #require(bounds(ofRedPixelsIn: try cpuFrame(canvas, width: 600, height: 400)))
+        #expect(drawn == cut, "Core Graphics showed the layer outside its board: \(drawn) against \(cut)")
+        if GPUCanvasRenderer.shared != nil {
+            let shown = try #require(bounds(ofRedPixelsIn: try gpuFrame(canvas, width: 600, height: 400)))
+            #expect(shown == cut, "The GPU showed the layer outside its board: \(shown) against \(cut)")
+        }
+    }
 }
